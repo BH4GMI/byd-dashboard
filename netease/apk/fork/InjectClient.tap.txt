@@ -1,0 +1,23 @@
+//@@ AFTER transactConstants
+
+    /** 自动补点的按下时长。太短会被部分控件当成抖动丢掉，50ms 与真人点按同量级。 */
+    private static final long TAP_DURATION_MS = 50;
+//@@ BEFORE classEnd
+
+    /**
+     * 一次点击。用户的手指就是 DOWN/UP 一对事件，自动补点必须走同一条路——
+     * 不能用 KeyEvent 或其它捷径，否则落点语义和手指不一致。
+     *
+     * displayId 只是让调用方读起来完整：代理的 TOUCH 不带 display，
+     * 用的是它自己 SET_DISPLAY 记下的那块屏，所以调用前必须 setDisplay。
+     *
+     * 为什么分支要补回这个方法：母工程 v1.0.0 的 InjectClient 没有它（新骨架不补点），
+     * 但本分支 CastActivity.tapUntilTargetPage 是实测闭环，方法体逐字保留、内部就调用
+     * injector.tap(...)。删掉那个调用点等于改行为，所以把客户端侧的点击助手补回来。
+     * 它只用现成的 touch() 发 DOWN/UP 一对事件，不涉及任何代理侧协议。
+     */
+    public void tap(int displayId, float x, float y) {
+        long now = SystemClock.uptimeMillis();
+        touch(MotionEvent.ACTION_DOWN, x, y, now, now);
+        touch(MotionEvent.ACTION_UP, x, y, now, now + TAP_DURATION_MS);
+    }

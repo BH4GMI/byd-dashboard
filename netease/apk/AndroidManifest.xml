@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.byd.dashcast.netease"
+    android:versionCode="100"
+    android:versionName="1.0.0-netease">
+
+    <uses-sdk
+        android:minSdkVersion="26"
+        android:targetSdkVersion="32" />
+
+    <!-- 回环 TCP 也受 INTERNET 权限约束（paranoid networking），连 127.0.0.1:5555 必须声明。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 开机后自己把 uid-2000 代理拉起来，让用户不必再插电脑。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:hardwareAccelerated="true"
+        android:theme="@style/CastTheme">
+
+        <!--
+          桌面入口是免责声明页，而不是主界面：这样"首次打开先看须知"是一条结构性约束，
+          不需要在主界面里再判一次。同意过之后它立刻转发到 CastActivity，用户看不到它。
+        -->
+        <activity
+            android:name=".DisclaimerActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
+            android:theme="@style/CastTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          主界面。**不再挂 LAUNCHER**（否则应用中心会出现两个图标），
+          但保持 exported=true：adb shell am start 直接拉起它是日常调试手段。
+          直接从这一条路进来会跳过免责声明 —— 这是开发者动作，不是用户路径。
+        -->
+        <activity
+            android:name=".CastActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density"
+            android:theme="@style/CastTheme" />
+
+        <!--
+            ADB 授权引导。只会在尚未授权时真正显示；已授权时它会在几百毫秒内
+            直接转到 CastActivity，用户看不到这一页。
+        -->
+        <activity
+            android:name=".GuideActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/CastTheme" />
+
+        <receiver
+            android:name="com.byd.dashcast.netease.adb.BootReceiver"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <!-- BYD 车机用的是快速启动流程，两个都收。 -->
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

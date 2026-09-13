@@ -1,0 +1,17 @@
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        autoCast = new AutoCast(this);
+        // 本分支（网易云版）的启动策略就是"打开即投屏"：没有开关、不看登录账号、不看是不是首启。
+        // 每次打开都跑同一个脚本，跑完就退出，全程不建界面。
+        // 桌面入口是 DisclaimerActivity（与母工程一致）：本分支包名不同，SharedPreferences
+        // 是独立的，所以本分支自己会单独弹一次免责声明。
+        // 透明度由 manifest 的 CastTheme 提供——运行时 setTheme 改不动窗口背景，
+        // 实测那样主屏会黑屏约 2 秒。本分支不 setContentView，窗口整块透明。
+        autoMode = true;
+        super.onCreate(savedInstanceState);
+        prepareSession();
+        registerReceiver(agentReceiver, new IntentFilter(ACTION_AGENT_READY));
+        // 代理是 uid 2000 的独立进程，会被系统回收；每次打开都补齐一次，不假定它还活着。
+        ensureAgent();
+        startAutoCast();
+    }

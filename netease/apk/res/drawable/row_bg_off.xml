@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用列表行 · 未选中。
+  对应预览页 `.row`：8px 圆角，无底色。按下靠涟漪反馈。
+-->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8px" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</ripple>

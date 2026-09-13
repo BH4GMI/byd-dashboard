@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏底。对应预览页 `.appTop`：panel 底 + 底部 1px line 描边。 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/panel" />
+        </shape>
+    </item>
+    <item
+        android:height="1px"
+        android:gravity="bottom">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/line" />
+        </shape>
+    </item>
+</layer-list>

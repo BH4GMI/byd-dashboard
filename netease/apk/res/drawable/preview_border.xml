@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  预览区上下各 1px 分隔线。对应预览页 `.previewBox` 的上下 border，颜色取 line 令牌。
+
+  它必须画在 TextureView **之上**（就是真机镜像画面之上），所以用在 FrameLayout 的
+  android:foreground 上，而不是 background —— background 会被不透明的 TextureView 盖住。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:height="1px"
+        android:gravity="top">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/line" />
+        </shape>
+    </item>
+    <item
+        android:height="1px"
+        android:gravity="bottom">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/line" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 分段控件的外框。对应预览页 `.seg`：line2 描边 + 8px 圆角。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="8px" />
+    <solid android:color="@android:color/transparent" />
+    <stroke
+        android:width="1px"
+        android:color="@color/line2" />
+</shape>

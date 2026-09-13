@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  圆形遮罩版本。内容与方形版完全一致：遮罩由系统施加，应用侧不该为圆形单独画一套
+  —— 一旦分开画，两套图形就会各自漂移。前景层已经保证全部内容落在安全区内，
+  所以在圆形遮罩下不会被裁掉，也就不需要单独的圆版资源。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

@@ -7,6 +7,10 @@
 # ── 构建产物 ──────────────────────────────────────────────────────────────
 out/
 apk/assets/dashcast-agent.jar
+# Same rule for the netease fork: a pattern with a slash *inside* it is anchored to this
+# directory, so the line above does not cover netease/apk/assets/dashcast-agent.jar
+# (that one is copied in by the fork's own build.ps1).
+netease/apk/assets/dashcast-agent.jar
 *.apk
 *.idsig
 

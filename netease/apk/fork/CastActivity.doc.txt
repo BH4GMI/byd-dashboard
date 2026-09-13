@@ -1,0 +1,40 @@
+/**
+ * 【网易云版分支 dashcast-netease】
+ *
+ * 与母工程（main 分支）的差异**全部**在 `netease/apk/fork/` 里，共四处：
+ *   1. 本段类注释；
+ *   2. onCreate：打开即投屏，永不建界面（`CastActivity.onCreate.txt`）；
+ *   3. 母工程删掉的那套自动投屏编排被原样搬回，外加三处判空守卫
+ *      （`CastActivity.overrides.txt`）；
+ *   4. `InjectClient.tap(...)` 补回来（`InjectClient.tap.txt`）——
+ *      tapUntilTargetPage 是实测闭环、方法体逐字保留，它内部要调这个方法。
+ *
+ * 本文件由 `scripts/sync_netease_fork.ps1` 机械生成，**不要手改**。
+ * 脚本取母工程的 CastActivity.java 逐字复制（只改包名），再把上面那些片段拼进来，
+ * 所以母工程的修复会自动流到本分支，不需要每次重新分析差异。
+ *
+ * 本分支永不建界面：onCreate 直接进"打开即投屏"。母工程那套管理界面
+ * （应用列表 / 镜像预览 / 触摸注入 / 一键按钮）的代码仍在文件里，但没有任何入口
+ * 调用它——保留它们正是为了让本文件能与母工程逐字对齐，差异越少跟进越省。
+ * 为此三处只加判空守卫、不删代码：refreshStatus / setStatus / applyMirrorVisuals
+ * 在自动分支下会拿到 null 界面元素，会被后台路径调到。
+ *
+ * 本分支实际执行的脚本（与母工程「一键」同一个）：
+ *   投到仪表屏 display 2 → 轮询真实屏位等它稳定 → 抓帧判页、闭环补点进歌词页 → 结束。
+ *   补点落点是实测数据，存 res/values/quick_taps.xml：网易云把播放页做成了应用内部页面，
+ *   既不开放深链也不响应语音广播。
+ *
+ * 硬约束（任何"优化""简化""重构"都是错的）：
+ *   - settleThenTap / tapUntilTargetPage 的方法体逐字保留；
+ *   - AutoCast / CarAccount / DashboardEye / quick_taps.xml 逐字保留；
+ *   - DashboardEye.grab / DashboardEye.classify 的用法不变。
+ *
+ * 看门：本分支送到歌词页就结束，不留看门。新骨架没有 keepWatchAfterTarget 这个概念——
+ * 新代理自己会在目标稳定 WATCH_STABLE_MS 后松开（Agent.releaseWatchIfStable），
+ * 所以 runQuickCast 调 injector.watch(pkg, displayId) 即可。
+ *
+ * 桌面入口是 DisclaimerActivity（与母工程一致）。本分支包名不同，SharedPreferences
+ * 是独立的，所以免责声明本分支会单独弹一次。
+ *
+ * 已知限制：授权丢失时 ensureAgent 会去打开引导页（母工程行为，本分支未改）。
+ */

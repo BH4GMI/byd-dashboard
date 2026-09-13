@@ -1,0 +1,328 @@
+//@@ AFTER heartbeatConstant
+
+    /** 等代理广播 Binder 的上限；代理静默 5 秒会重播，这里留一倍余量。 */
+    private static final long AUTO_BIND_TIMEOUT_MS = 10000;
+    /**
+     * 补点前的等待策略。不能睡固定时长——启动之后整条 root task 会先跳到主屏，
+     * 由看门再搬回仪表屏（看门 1 秒一拍、搬完还有 3 秒静默期），这段时长是变动的。
+     * 所以轮询代理给出的真实屏位，确认真回到仪表屏了再点。
+     */
+    private static final long TASK_POLL_INTERVAL_MS = 250;
+    private static final long TASK_SETTLE_TIMEOUT_MS = 8000;
+    /** 目标本来就在仪表屏上：没有搬动，就没有跨屏重排，等一小会儿即可。 */
+    private static final long SETTLE_STEADY_MS = 250;
+    /** 闭环补点：抓一帧判页，最多点几次。 */
+    private static final int TAP_MAX_ATTEMPTS = 3;
+    /** 点完到下次抓帧之间，给页面切换留的时间。 */
+    private static final long TAP_SETTLE_MS = 1200;
+
+    /**
+     * 等目标页（歌词播放页）出现的总预算。
+     *
+     * 这个值是按**重启后立即冷启动**定的，不是按热启动定的：那时网易云进程不存在、
+     * RN 包没预热，从启动到画出首页要好几秒。旧实现在这里没有预算概念——固定只检查
+     * 3 次、而且把"不是首页"当成"到了目标页"，于是冷启动窗口内必然误报成功。
+     */
+    private static final long TARGET_DEADLINE_MS = 20000;
+    /** 「既不是首页也不是目标页」时的复检间隔。抓帧要拆建一次镜像，不宜太密。 */
+    private static final long PAGE_POLL_MS = 500;
+    /** 补点落点与判页都按仪表屏原始分辨率。 */
+    private static final int CLUSTER_WIDTH = 1920;
+    private static final int CLUSTER_HEIGHT = 720;
+    /** 刚被看门从主屏搬回来：整窗要重排，等足——实测 400ms 时点击不命中。 */
+    private static final long SETTLE_AFTER_MOVE_MS = 1500;
+//@@ BEFORE sessionField
+    private AutoCast autoCast;
+
+    /**
+     * 打开即投屏分支：本实例不建任何界面元素（status / preview / 列表全为 null），
+     * 所以 setStatus / refreshStatus 必须先判空，否则后台执行时会 NPE。
+     */
+    private boolean autoMode;
+    private boolean autoStarted;
+    /** 复用同一个「一键」脚本；它跑失败时，"本次开机仅一次"的标记要回滚，用户才能再试。 */
+    private boolean quickCastOk;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+//@@ AFTER receiverAttachCheck
+            if (autoMode) {
+                // 打开即投屏：代理一连上就立刻跑脚本。不建界面，也不建镜像——
+                // 镜像挂在本界面的 Surface 上，界面不存在就无从谈起。
+                if (session.isActive()) {
+                    injector.setDisplay(session.displayId());
+                }
+                runAutoCast();
+                return;
+            }
+//@@ AFTER refreshStatusSignature
+        if (status == null) {
+            // 打开即投屏分支不 setContentView，界面元素全部为 null。refreshStatus 会被
+            // ensureAgent / 广播接收器 / 心跳从后台路径调到，不判空就是一次空指针崩溃。
+            return;
+        }
+//@@ AFTER mirroringAssignment
+        if (autoMode) {
+            // 打开即投屏分支没有界面元素（cornerHint 为 null），而 onPause 一定会走到这里；
+            // 不判空就是一次空指针崩溃：进程当场死亡、脚本中断，实测踩过。
+            return;
+        }
+//@@ AFTER setStatusTextHead
+        if (status == null) {
+            // 打开即投屏分支没有状态栏，日志就是唯一的落点。
+            return;
+        }
+//@@ BEFORE classEnd
+
+    /** 打开即投屏分支：等代理广播 Binder；代理静默 5 秒会重播，超时就如实报告并退出。 */
+    private void startAutoCast() {
+        uiHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (autoStarted) {
+                    return;
+                }
+                Log.w(TAG, "打开即投屏：等注入代理超时");
+                // 回滚标记：失败不该吃掉"本次开机仅一次"的机会。
+                autoCast.unmarkRan();
+                toast(getString(R.string.auto_agent_offline));
+                finish();
+            }
+        }, AUTO_BIND_TIMEOUT_MS);
+    }
+
+    private void runAutoCast() {
+        if (autoStarted) {
+            return;
+        }
+        autoStarted = true;
+        AutoCast.Target target = autoCast.target();
+        Log.i(TAG, "打开即投屏：执行 " + target.packageName);
+        runQuickCast(target, true, new Runnable() {
+            @Override
+            public void run() {
+                if (!quickCastOk) {
+                    // 没投上去就等于这次没用成：把标记还给用户，下次打开可以再试。
+                    autoCast.unmarkRan();
+                }
+                finish();
+            }
+        });
+    }
+
+    /**
+     * 一键脚本：投到仪表屏 → 补一次点按 → 结束。
+     *
+     * background 只影响文案；后台分支没有状态栏，提示一律走 Toast。
+     *
+     * 形参与旧版的唯一差别：旧版还有 persistentWatch（旧 InjectClient.watch 的第三个参数）。
+     * 新骨架的 watch(packageName, displayId) 没有 persistent 概念，新代理自己会在目标稳定
+     * WATCH_STABLE_MS 之后松开看门（agent/src/com/byd/dashcast/agent/Agent.java 的
+     * releaseWatchIfStable）。所以本分支不再需要 keepWatchAfterTarget() 这个概念，
+     * 这个形参也随之取消——看门"留不留"不再是本端的选择题。
+     */
+    private void runQuickCast(final AutoCast.Target target, final boolean background,
+            final Runnable onDone) {
+        quickCastOk = false;
+        if (!session.isActive()) {
+            String text = getString(R.string.status_no_display);
+            setStatus(text);
+            toast(text);
+            if (onDone != null) {
+                onDone.run();
+            }
+            return;
+        }
+        final int display = session.displayId();
+        // TOUCH 不带 display，代理用的是它自己 SET_DISPLAY 记下的那块屏。
+        injector.setDisplay(display);
+
+        // 先开看门再启动。`am start-activity --display N` 会把整条 root task 挪到主屏，
+        // 得先有人在后面把它拉回来；顺序反了就会出现"补点那一刻应用还在主屏"。
+        watchedPackage = target.packageName;
+        watchState = null;
+        injector.watch(target.packageName, display);
+
+        setStatus(getString(background ? R.string.auto_running : R.string.quick_running)
+                + target.label);
+        // 启动前的屏位检查放后台线程：这是 binder 调用。
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                int at = injector.taskDisplay(target.packageName);
+                // 只有真的找到任务（屏位 >= 0）才走搬屏。-1 表示"没有该任务"、-2 表示
+                // 原语不可用，这两种都必须去启动——上一版把 -1 也当成"有任务"，
+                // 结果该启动的时候搬了个空，脚本静默失败。
+                if (at >= 0) {
+                    // 已经有任务：搬过去，不要再 am start。
+                    // `am start-activity --display N` 在目标屏上没有该包的任务时会新建一条
+                    // root task，结果同一个应用在两块屏上各跑一份、各有各的页面和动画
+                    // （实测踩过：网易云在 display 0 和 display 2 上同时活着）。
+                    Log.i(TAG, "目标已有任务（在 display " + at + "），改为搬屏而非新启动");
+                    int[] moved = injector.moveToDisplay(target.packageName, display);
+                    Log.i(TAG, "搬屏结果：原屏=" + moved[0] + " 搬动=" + moved[1]);
+                    quickCastOk = true;
+                    settleThenTap(target, display, onDone,
+                            at == display ? SETTLE_STEADY_MS : SETTLE_AFTER_MOVE_MS);
+                    return;
+                }
+                Log.i(TAG, "目标当前没有任务（屏位=" + at + "），走启动");
+                injector.launch(display, target.packageName, target.activityName,
+                        new InjectClient.LaunchCallback() {
+                            @Override
+                            public void onResult(boolean success, String message) {
+                                if (success) {
+                                    quickCastOk = true;
+                                    settleThenTap(target, display, onDone, SETTLE_AFTER_MOVE_MS);
+                                    return;
+                                }
+                                final String text = getString(R.string.cast_failed) + message;
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        setStatus(text);
+                                        toast(text);
+                                        if (onDone != null) {
+                                            onDone.run();
+                                        }
+                                    }
+                                });
+                            }
+                        });
+            }
+        }, "dashcast-quick");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /**
+     * 闭环补点：抓仪表屏一帧**正面判页**，只有确认到了歌词播放页才算成功。
+     *
+     * 为什么要闭环：补点是盲的坐标点击，既不知道仪表屏上现在是不是目标应用，
+     * 也不知道点完有没有反应。实测踩过：一次点在车机导航上（应用还没被搬回来），
+     * 一次点了页面没动——两次脚本都照样报"已展开"。
+     *
+     * 为什么要三分类（见 {@link DashboardEye.Page}）：旧实现把"不是首页"当成
+     * "到了目标页"，而重启后冷启动的加载黑屏、启动白屏、车机地图全都"不是首页"，
+     * 于是它**一次都不点就报成功**。现在只有 {@code LYRICS} 算成功，
+     * {@code OTHER} 一律继续等（既不能点——点在加载画面上是白费，也不能判成功）。
+     *
+     * 预算用总时长而不是固定次数：冷启动的加载窗口长短不定，固定次数会在慢的时候
+     * 提前放弃、在快的时候多等。超时就返回 false，让界面如实报"未生效"。
+     *
+     * @return true 仅当确认已到歌词播放页
+     */
+    private boolean tapUntilTargetPage(AutoCast.Target target, int display) {
+        float[] point = AutoCast.tapFor(CastActivity.this, target.packageName);
+        if (point == null) {
+            return true;
+        }
+        long deadline = SystemClock.uptimeMillis() + TARGET_DEADLINE_MS;
+        int taps = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            Bitmap frame = DashboardEye.grab(injector, CLUSTER_WIDTH, CLUSTER_HEIGHT);
+            DashboardEye.Page page = DashboardEye.classify(frame);
+            if (frame != null) {
+                frame.recycle();
+            }
+
+            if (page == DashboardEye.Page.LYRICS) {
+                Log.i(TAG, "补点闭环：已到歌词播放页（共点 " + taps + " 次）");
+                return true;
+            }
+
+            if (page == DashboardEye.Page.HOME) {
+                if (taps >= TAP_MAX_ATTEMPTS) {
+                    Log.w(TAG, "补点闭环：点了 " + taps + " 次仍停在首页");
+                    return false;
+                }
+                taps++;
+                Log.i(TAG, "补点闭环：第 " + taps + " 次点击 " + point[0] + "," + point[1]
+                        + " → " + target.packageName);
+                injector.tap(display, point[0], point[1]);
+                sleepQuietly(TAP_SETTLE_MS);
+                continue;
+            }
+
+            // OTHER：多半是冷启动还没画出来，或者是车机自己的页面。继续等，别乱点也别报成功。
+            Log.i(TAG, "补点闭环：还没到目标页（已点 " + taps + " 次），继续等");
+            sleepQuietly(PAGE_POLL_MS);
+        }
+        Log.w(TAG, "补点闭环：等满 " + TARGET_DEADLINE_MS + " ms 仍未到歌词播放页");
+        return false;
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 先等目标包的 root task 真的落在仪表屏上，再等窗口重排完，然后补点。
+     *
+     * 这一步是本次修复的核心。原版按固定时长等，实测点在空处：代理日志里
+     * "注入"早于"看门：搬回 display 2"，那一刻应用还在主屏。
+     *
+     * settleMs 传两档：没搬动（本来就在仪表屏）给一小档就够，刚跨屏搬回来要给足——
+     * 跨屏会触发整窗重排，重排没完点击不会命中。
+     */
+    private void settleThenTap(final AutoCast.Target target, final int display,
+            final Runnable onDone, final long settleMs) {
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long deadline = SystemClock.uptimeMillis() + TASK_SETTLE_TIMEOUT_MS;
+                int actual = -2;
+                while (true) {
+                    actual = injector.taskDisplay(target.packageName);
+                    if (actual == display || actual == -2
+                            || SystemClock.uptimeMillis() >= deadline) {
+                        break;
+                    }
+                    try {
+                        Thread.sleep(TASK_POLL_INTERVAL_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                boolean ok = actual == display;
+                if (actual == display) {
+                    try {
+                        Thread.sleep(settleMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    ok = tapUntilTargetPage(target, display);
+                } else {
+                    Log.w(TAG, "投屏未生效：" + target.packageName
+                            + " 屏位=" + actual + "，目标=" + display);
+                }
+                final boolean reached = ok;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (reached) {
+                            setStatus(getString(R.string.quick_done) + target.label);
+                        } else {
+                            // 没到目标页就如实说，不能报"已投屏并展开"。
+                            quickCastOk = false;
+                            setStatus(getString(R.string.quick_incomplete) + target.label);
+                        }
+                        // 抓帧会把预览镜像拆掉（同一个镜像通道），这里重建。
+                        if (!autoMode) {
+                            applyMirrorVisuals(false);
+                            startMirrorIfReady();
+                        }
+                        refreshStatus();
+                        if (onDone != null) {
+                            onDone.run();
+                        }
+                    }
+                });
+            }
+        }, "dashcast-settle");
+        worker.setDaemon(true);
+        worker.start();
+    }
