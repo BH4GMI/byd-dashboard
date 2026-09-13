@@ -13,6 +13,8 @@
 #     InjectClient.tap.txt        restores InjectClient.tap(...), which the branch
 #                                 CastActivity still calls but v1.0.0 of the main
 #                                 project dropped
+#     strings.branch.xml          branch-owned wording for the string resources the
+#                                 main project dropped; overrides or appends by name
 #     only/                       branch-only files the main project no longer has
 #                                 (AutoCast.java, CarAccount.java, DashboardEye.java,
 #                                 quick_taps.xml) -- copied verbatim, package renamed
@@ -25,11 +27,8 @@ param(
     # Defaults are derived from this script's own location, never hard-coded:
     #   -Main   <repo>\apk
     #   -Fork   <repo>\netease\apk
-    #   -Legacy <repo-parent>\dashbord\apk   (the old development tree; only used as the
-    #           source for string resources the main project has dropped)
     [string]$Main = '',
-    [string]$Fork = '',
-    [string]$Legacy = ''
+    [string]$Fork = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +46,6 @@ function Write-Text([string]$p, [string]$t) {
 $repo = Split-Path -Parent $PSScriptRoot
 if ($Main -eq '') { $Main = Join-Path $repo 'apk' }
 if ($Fork -eq '') { $Fork = Join-Path $repo 'netease\apk' }
-if ($Legacy -eq '') { $Legacy = Join-Path (Split-Path -Parent $repo) 'dashbord\apk' }
 
 if (-not (Test-Path (Join-Path $Main 'AndroidManifest.xml'))) {
     throw "not a dashcast apk tree: $Main"
@@ -302,38 +300,49 @@ $st = $st.Substring(0, $m.Index) + $want + $st.Substring($m.Index + $m.Length)
 
 # String resources the branch's code needs but v1.0.0 of the main project dropped when it
 # deleted the auto-cast orchestration. Deleting the call sites instead would be changing
-# behaviour, so the fork carries the resources. They are copied from the legacy tree at
-# generation time (never typed into this script -- it has to stay ASCII).
-$needed = @('auto_agent_offline', 'auto_running', 'quick_running', 'quick_done', 'quick_incomplete')
-$legacyPath = Join-Path $Legacy 'res\values\strings.xml'
-$legacyStrings = $null
-if (Test-Path $legacyPath) { $legacyStrings = Read-Text $legacyPath }
-$added = New-Object System.Collections.ArrayList
-foreach ($name in $needed) {
-    if ([regex]::IsMatch($st, '<string name="' + [regex]::Escape($name) + '">')) { continue }
-    $pat = '<string name="' + [regex]::Escape($name) + '">.*?</string>'
-    $src = $null
-    if ($null -ne $legacyStrings) {
-        $lm = [regex]::Match($legacyStrings, $pat)
-        if ($lm.Success) { $src = $lm.Value.Trim() }
+# behaviour, so the branch carries the resources. The wording is owned by the branch and
+# lives in fork\strings.branch.xml -- read as UTF-8, never typed into this script (which
+# has to stay ASCII), and never inherited from the old development tree: that wording was
+# about the main project's "first-launch auto" switch, which is not what this branch is.
+$branchStringsPath = Join-Path $forkRoot 'strings.branch.xml'
+if (-not (Test-Path $branchStringsPath)) { throw "branch strings fragment missing: $branchStringsPath" }
+$entries = [regex]::Matches((Read-Text $branchStringsPath), '<string name="([^"]+)">.*?</string>')
+if ($entries.Count -eq 0) { throw "no <string> entries in $branchStringsPath" }
+$overridden = 0
+$appended = New-Object System.Collections.ArrayList
+foreach ($e in $entries) {
+    $pat = '<string name="' + [regex]::Escape($e.Groups[1].Value) + '">.*?</string>'
+    $cur = [regex]::Match($st, $pat)
+    if ($cur.Success) {
+        if ($cur.Value -ne $e.Value) {
+            $st = $st.Substring(0, $cur.Index) + $e.Value + $st.Substring($cur.Index + $cur.Length)
+            $overridden++
+        }
+    } else {
+        $null = $appended.Add('    ' + $e.Value)
     }
-    if ($null -eq $src) {
-        throw "string resource '$name' is in neither the main project nor $legacyPath"
-    }
-    $null = $added.Add('    ' + $src)
 }
-if ($added.Count -gt 0) {
+if ($appended.Count -gt 0) {
     $block = @()
     $block += ''
     $block += '    <!-- netease fork only: the main project dropped the auto-cast orchestration'
-    $block += '         and its strings; the branch still runs that script, so restore them. -->'
-    $block += $added
+    $block += '         and its strings; the branch still runs that script. -->'
+    $block += $appended
     $close = $st.LastIndexOf('</resources>')
     if ($close -lt 0) { throw 'anchor not found: </resources> in res\values\strings.xml' }
     $st = $st.Substring(0, $close) + (($block -join "`n") + "`n") + $st.Substring($close)
 }
+# Assert every branch-owned name really landed. A silent miss would ship a resource the
+# branch's code still references, which fails at inflate time on the car -- far more
+# expensive to find than a sync failure.
+foreach ($e in $entries) {
+    $name = $e.Groups[1].Value
+    if (-not [regex]::IsMatch($st, '<string name="' + [regex]::Escape($name) + '">')) {
+        throw "branch string '$name' missing from the generated res\values\strings.xml"
+    }
+}
 Write-Text $stPath $st
-Write-Output ("  res\values\strings.xml (+{0} restored string(s))" -f $added.Count)
+Write-Output ("  res\values\strings.xml (branch strings: {0} overridden, {1} appended)" -f $overridden, $appended.Count)
 
 # --- manifest -------------------------------------------------------------------------
 Write-Output '--- AndroidManifest.xml ---'

@@ -1,0 +1,12 @@
+<!-- netease 分支自己的文案。
+
+     这 5 条 string 母工程 v1.0.0 已经删掉（它删了整套自动投屏编排），但分支搬回来的
+     那段链路仍在引用它们。文案由**分支自己拥有**，不再从旧开发目录读取：旧目录是陈旧的，
+     而且它的措辞属于「首开自动」，与分支的语义（打开即投屏）不符。
+
+     改这里的文案即可，同步脚本会按 name 覆盖或追加进生成物，并断言每条都在。 -->
+<string name="auto_agent_offline">打开即投屏失败：注入代理未连接</string>
+<string name="auto_running">打开即投屏：</string>
+<string name="quick_running">一键投屏：</string>
+<string name="quick_done">已投屏并展开：</string>
+<string name="quick_incomplete">未生效，应用没到仪表屏：</string>

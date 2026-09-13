@@ -124,9 +124,9 @@
     <string name="guide_state_ok_body">以后不再需要这一步。</string>
 
     <!-- netease fork only: the main project dropped the auto-cast orchestration
-         and its strings; the branch still runs that script, so restore them. -->
-    <string name="auto_agent_offline">首开自动失败：注入代理未连接</string>
-    <string name="auto_running">首开自动：正在执行 </string>
+         and its strings; the branch still runs that script. -->
+    <string name="auto_agent_offline">打开即投屏失败：注入代理未连接</string>
+    <string name="auto_running">打开即投屏：</string>
     <string name="quick_running">一键投屏：</string>
     <string name="quick_done">已投屏并展开：</string>
     <string name="quick_incomplete">未生效，应用没到仪表屏：</string>

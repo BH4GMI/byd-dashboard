@@ -42,11 +42,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
   C:\Users\REDMI\Desktop\Workspace\Android\BYD-dashbord\scripts\sync_netease_fork.ps1
 ```
 
-脚本自己从所在位置推出 `-Main=<repo>\apk`、`-Fork=<repo>\netease\apk`；
-`-Legacy=<repo 的上一级>\dashbord\apk`（旧开发目录）只在**补字符串资源**时用到：
+脚本自己从所在位置推出 `-Main=<repo>\apk`、`-Fork=<repo>\netease\apk`，不需要任何别的参数。
+
 母工程 v1.0.0 删掉了自动投屏编排，那几条文案随之删除，而分支的脚本还要用，
-所以那些 `<string>` 从旧目录按 UTF-8 原样取回、并进分支的 `strings.xml`。
-删代码来绕过缺资源是错的，这是刻意保留的路。
+所以那些 `<string>` 由 `strings.branch.xml` 提供：脚本按 `name` 覆盖或追加进分支的
+`strings.xml`，并逐条断言都在。**删代码来绕过缺资源是错的**，这是刻意保留的路。
+
+文案由分支自己拥有，不从旧开发目录读：旧目录是陈旧的，而且它的措辞属于母工程的
+「首开自动」开关，与分支的语义（打开即投屏）不符。
 
 ## 构建
 
