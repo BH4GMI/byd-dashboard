@@ -696,16 +696,29 @@ public final class CastActivity extends Activity implements TextureView.SurfaceT
         refreshStatus();
     }
 
+    /**
+     * 本分支没有界面，所以「本界面 pause」不等于「用户离开了」——它恰恰是**目标应用被启动**
+     * 的信号。母工程在 onPause 里撤看门，是为了让用户点图标时能把应用拉回前台；分支在这里
+     * 撤看门，等于在"最需要看门的那一刻"松手：`am start-activity --display 2` 建出来的
+     * root task 会立刻跳到主屏，看门一撤，就再没有任何东西把它搬回仪表屏，投屏当场丢失。
+     *
+     * 实测（网易云当前没有任务，走 launch 路径）：task 在 T+3 出现在仪表屏、T+4 回到主屏，
+     * 之后一直留在主屏；代理日志是「开始看门 / 执行 am start-activity / 停止看门」三条紧挨着，
+     * 链路随后抓帧判页抓的全是主屏那份画面，最后报「未生效，应用没到仪表屏」。
+     *
+     * 所以这里两件事都不做：
+     *   - 不撤看门。看门留到链路自己结束（onDone → finish() → onDestroy 时才撤）。代理侧的
+     *     「目标稳定 WATCH_STABLE_MS 之后自动松开」是兜底，应用不会被永久钉死在仪表屏。
+     *   - 不停心跳。代理侧的 WATCH_IDLE_TIMEOUT_MS 是"客户端失联 5 秒就撤看门"，停了心跳
+     *     等于把看门交给超时，而这段正是最需要它的时候。心跳只做 ping + refreshStatus，
+     *     分支里已判空，后台继续跑没有副作用。
+     *
+     * 镜像与提示照母工程收掉：没有界面时它们本来也没人看，链路每次抓帧会自己重建。
+     */
     @Override
     protected void onPause() {
-        heartbeatHandler.removeCallbacks(heartbeat);
         injector.stopMirror();
         applyMirrorVisuals(false);
-        // 界面不再可见就撤销看门。这是"投屏后应用还能被拉回前台"的关键：
-        // 用户在主屏点该应用图标时，本界面必然 pause，看门必须在那一刻松手，
-        // 否则代理会在 1 秒内把任务又搬回仪表屏，表现为"按了回不到前台"。
-        // 撤销看门不会把已经投上去的应用搬走——它留在仪表屏上，直到有人动它。
-        stopWatching();
         super.onPause();
     }
 

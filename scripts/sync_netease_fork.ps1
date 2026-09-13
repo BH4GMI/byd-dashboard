@@ -7,6 +7,9 @@
 #   then the fork's own fragments from netease/apk/fork/ are spliced in:
 #     CastActivity.doc.txt        replaces the branch CastActivity class javadoc
 #     CastActivity.onCreate.txt   replaces the branch CastActivity onCreate
+#     CastActivity.onPause.txt    replaces the branch CastActivity onPause: the branch has
+#                                 no UI, so its own pause (which is exactly what launching
+#                                 the target causes) must NOT release the watch
 #     CastActivity.overrides.txt  inserted blocks: constants, fields, the auto-mode
 #                                 dispatch in the receiver, three null guards and the
 #                                 restored auto-cast methods
@@ -120,6 +123,26 @@ function Get-BodyEnd([string]$text, [int]$openBrace) {
         $i++
     }
     return -1
+}
+
+# Replace a whole method with a fork-owned fragment. Brace matching is required (a plain
+# regex cannot do it: braces live inside string literals and comments), and the preceding
+# @Override plus its indentation goes with it, so the fragment owns the annotations too.
+# Fails loudly when any anchor moves instead of silently dropping the divergence.
+function Replace-Method([string]$text, [string]$sig, [string]$name, [string]$fragmentPath) {
+    $si = $text.IndexOf($sig)
+    if ($si -lt 0) { throw "anchor not found: $name signature" }
+    $brace = $text.IndexOf('{', $si)
+    if ($brace -lt 0) { throw "anchor not found: $name opening brace" }
+    $end = Get-BodyEnd $text $brace
+    if ($end -lt 0) { throw "brace matching failed for $name" }
+    $ov = $text.LastIndexOf('@Override', $si)
+    if ($ov -lt 0) { throw "anchor not found: @Override above $name" }
+    $start = $ov
+    while ($start -gt 0 -and ($text[$start - 1] -eq ' ' -or $text[$start - 1] -eq "`t")) { $start-- }
+    $body = (Read-Text $fragmentPath).TrimEnd("`r", "`n")
+    if ($body.Length -eq 0) { throw "empty fragment: $fragmentPath" }
+    return $text.Substring(0, $start) + $body + $text.Substring($end + 1)
 }
 
 # A fragment file is a sequence of blocks, each introduced by an ASCII marker line:
@@ -242,19 +265,10 @@ if ($docStart -lt 0) { throw 'anchor not found: CastActivity class javadoc' }
 $doc = (Read-Text (Join-Path $forkRoot 'CastActivity.doc.txt')).TrimEnd("`r", "`n")
 $text = $text.Substring(0, $docStart) + $doc + "`n" + $text.Substring($ci)
 
-$sig = 'protected void onCreate(Bundle savedInstanceState)'
-$si = $text.IndexOf($sig)
-if ($si -lt 0) { throw 'anchor not found: onCreate signature' }
-$brace = $text.IndexOf('{', $si)
-if ($brace -lt 0) { throw 'anchor not found: onCreate opening brace' }
-$end = Get-BodyEnd $text $brace
-if ($end -lt 0) { throw 'brace matching failed for onCreate' }
-$ov = $text.LastIndexOf('@Override', $si)
-if ($ov -lt 0) { throw 'anchor not found: @Override above onCreate' }
-$start = $ov
-while ($start -gt 0 -and ($text[$start - 1] -eq ' ' -or $text[$start - 1] -eq "`t")) { $start-- }
-$onCreate = (Read-Text (Join-Path $forkRoot 'CastActivity.onCreate.txt')).TrimEnd("`r", "`n")
-$text = $text.Substring(0, $start) + $onCreate + $text.Substring($end + 1)
+$text = Replace-Method $text 'protected void onCreate(Bundle savedInstanceState)' 'onCreate' `
+    (Join-Path $forkRoot 'CastActivity.onCreate.txt')
+$text = Replace-Method $text 'protected void onPause()' 'onPause' `
+    (Join-Path $forkRoot 'CastActivity.onPause.txt')
 
 $text = Apply-Blocks $text $castAnchors (Join-Path $forkRoot 'CastActivity.overrides.txt')
 $castDst = Join-Path $Fork 'src\com\byd\dashcast\netease\CastActivity.java'
@@ -482,6 +496,26 @@ if (-not (Read-Text $icDst).Contains('public void tap(int displayId, float x, fl
     Write-Output '  MISS InjectClient.tap'; $bad++
 } else {
     Write-Output '  OK   InjectClient.tap'
+}
+# The branch's onPause must keep the watch and the heartbeat: its own pause IS the target
+# being launched, which is the one moment the watch is load-bearing. Extract the body --
+# a bare search for stopWatching() would trip over onDestroy and exitManagement.
+$pi = $castOut.IndexOf('protected void onPause()')
+if ($pi -lt 0) {
+    Write-Output '  MISS protected void onPause() in the generated CastActivity'; $bad++
+} else {
+    $pb = $castOut.IndexOf('{', $pi)
+    $pe = Get-BodyEnd $castOut $pb
+    if ($pe -lt 0) { Write-Output '  MISS brace matching for onPause'; $bad++ }
+    else {
+        $pause = $castOut.Substring($pb, $pe - $pb + 1)
+        if ($pause.Contains('stopWatching')) {
+            Write-Output '  MISS onPause releases the watch'; $bad++
+        } else { Write-Output '  OK   onPause keeps the watch' }
+        if ($pause.Contains('removeCallbacks(heartbeat)')) {
+            Write-Output '  MISS onPause stops the heartbeat'; $bad++
+        } else { Write-Output '  OK   onPause keeps the heartbeat' }
+    }
 }
 if ($bad -gt 0) { Write-Output "FAILED: $bad problem(s) in the generated fork"; exit 1 }
 
