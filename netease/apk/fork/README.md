@@ -21,10 +21,15 @@
 | --- | --- |
 | `CastActivity.doc.txt` | 替换分支 `CastActivity` 的类注释 |
 | `CastActivity.onCreate.txt` | 替换分支 `CastActivity` 的 `onCreate`：打开即投屏、不建界面 |
+| `CastActivity.onPause.txt` | 替换分支 `CastActivity` 的 `onPause`：本分支没有界面，它自己的 pause 恰恰是「目标被启动」的信号，所以不能在那里撤看门、也不能停心跳 |
 | `CastActivity.overrides.txt` | 分支对母工程 `CastActivity` 的其余改动，按 `//@@ AFTER/BEFORE <锚点>` 分块插入 |
 | `InjectClient.tap.txt` | 给分支的 `InjectClient` 补回 `tap(...)`（见下"为什么要补 tap"） |
+| `strings.branch.xml` | 分支自己的文案（母工程删掉了那几条 string），按 `name` 覆盖或追加进 `strings.xml` |
 | `app_name.txt` | 应用显示名（`网易云投屏`） |
 | `only/` | 母工程已经没有的分支专有文件，逐字拷贝：`AutoCast.java`、`CarAccount.java`、`DashboardEye.java`、`quick_taps.xml` |
+
+片段与母工程源码的对应关系：前三个是**整方法/整注释替换**（`doc`、`onCreate`、`onPause`，
+按 `@Override` + 花括号配对定位），`overrides.txt` 与 `InjectClient.tap.txt` 是**按锚点插入**。
 
 `overrides.txt` 里每个锚点都是母工程源码里的**正则**（例如
 `^    private void refreshStatus\(\) \{$`）。母工程一旦把锚点挪了位置，同步脚本会当场
@@ -39,7 +44,7 @@ ASCII-only、且不能有 BOM。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  C:\Users\REDMI\Desktop\Workspace\Android\BYD-dashbord\scripts\sync_netease_fork.ps1
+  <仓库>\scripts\sync_netease_fork.ps1
 ```
 
 脚本自己从所在位置推出 `-Main=<repo>\apk`、`-Fork=<repo>\netease\apk`，不需要任何别的参数。
