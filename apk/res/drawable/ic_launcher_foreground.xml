@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标 · 前景层。
+
+  图形只讲一件事：一块仪表屏 + 屏内车速表 + 屏下一只朝上的箭头（= 送到那块屏上）。
+  刻意不用投屏/Wi-Fi 那三条弧：它与车机状态栏里的一排信号图标撞脸，会被读成网络信号。
+
+  四条设计约束，改动前先读：
+  1. **只有画布中间的 72×72（18..90）会被启动器显示**。外层 18 单位是给视差动画用的溢出区，
+     实际不可见。所以"上下留多少"必须按 18..90 这个窗口算，不是按 0..108 算。
+     按 0..108 算过一版，结果箭头底边落在可见区的绝对下边界上，看上去像被裁掉了。
+  2. 不用「三角 + 圆角矩形」拼箭头。杆顶若是 rx=宽度/2 的半圆拱，只与三角底边相切，
+     两侧必然露缝。箭头在这里是**一条闭合路径**，头和杆同一个形状，不存在接缝。
+  3. 仪表按「圆弧(含圆头端帽) + 指针 + 轴心」的**整体外框**在面板内居中，不是按轴心定位。
+     按轴心定位时轴心球离底边只剩 1.6，这就是「仪表和边框太近」的成因。
+  4. 整组图形缩放 0.785 并下移 4.5 单位。缩放是为了塞进可见窗口并留出边距；
+     下移是视觉居中 —— 包围盒居中 ≠ 视觉居中：宽面板的白线面积远大于细箭头，
+     白色质心比几何中心高。
+
+  缩放/偏移由设计预览页 `dashcast-design-preview.html` 的滑块标定（那里按 18..90
+  这个真实窗口渲染，和真机所见一致）。改这里必须同步改那边，两边参数是一份数据的两个副本：
+    预览页  ICON_SCALE / ICON_DY
+    本文件  group 的 scaleX/scaleY / translateY
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 缩放围绕画布中心；translateY 在缩放之后施加，所以它是画布单位，不会被缩放放大 -->
+    <group android:translateY="4.5"
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.785"
+        android:scaleY="0.785">
+
+        <!-- 仪表屏：22..86 × 22..52，圆角 7，白色描边 3 -->
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M29,22 L79,22 A7,7 0 0 1 86,29 L86,45 A7,7 0 0 1 79,52 L29,52 A7,7 0 0 1 22,45 L22,29 A7,7 0 0 1 29,22 Z"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="3" />
+
+        <!-- 屏内车速表圆弧：轴心 (54,40.8) 半径 11.5，跨 220°（两端下垂到轴心线以下） -->
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M43.19,44.73 A11.5,11.5 0 1 1 64.81,44.73"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="3.6" />
+
+        <!-- 指针 -->
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M54,40.8 L59.1,34.7"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="2.6" />
+
+        <!-- 轴心 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M52,40.8 A2,2 0 1 1 56,40.8 A2,2 0 1 1 52,40.8 Z" />
+
+        <!-- 上行箭头：一条闭合路径，三角头 + 方形杆 + 直角底边 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,58 L65.5,70.5 L57.5,70.5 L57.5,86 L50.5,86 L50.5,70.5 L42.5,70.5 Z" />
+    </group>
+</vector>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  引导页说明块的左侧竖线。对应预览页 `.gnote`：2px 的 line2 左边框。
+  竖线撑满整块高度、贴左边缘，正文靠自己的 paddingLeft 让开。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="2px">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/line2" />
+        </shape>
+    </item>
+</layer-list>

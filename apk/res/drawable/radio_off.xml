@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 一键启动单选项 · 未选中。对应预览页 `.radio`：30px 圆，2px t3 描边。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@android:color/transparent" />
+    <stroke
+        android:width="2px"
+        android:color="@color/t3" />
+</shape>

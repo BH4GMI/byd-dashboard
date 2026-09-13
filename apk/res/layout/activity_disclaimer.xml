@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  首次打开的免责声明。对应设计预览页 `dashcast-design-preview.html` 的 S0。
+
+  它是**整条流程的第一步，先于任何调试通道动作**：从桌面图标进来的第一个界面就是它，
+  点「同意并继续」才轮到授权引导（车机弹「允许 USB 调试吗」）。
+
+  版式与 S5 授权页同一张卡片、同一套语言（编号圆点 + 说明块 + 底部动作），
+  让"须知 → 授权 → 主界面"读起来是一条线，而不是三个不相干的页面。
+
+  **顺序与层级，是这张页面上唯一重要的排版决定**：
+    1 注意驾驶安全 / 2 按现状提供 —— 排在最前、也最重：24px、t1、34px 琥珀圆点、
+      粗体引导词、每句一行（\\n 断句）。这是这份声明真正要说的事。
+    3 开源免费 —— 同上尺寸，但圆点用强调蓝：琥珀在全站只表示"当心"，
+      而"开源免费"不是警告，是要被看见的声明。
+    4 仅本车验证 —— 21px、t3、28px 灰圆点，是适用范围这类背景事实。
+  层级一样重等于每一条都没人看；把适用范围压低后，视线自然落在 1/2/3 上。
+
+  条目正文用资源里的 <b> 行内标记给出粗体引导词：一条 TextView 就能既加粗又整段折行，
+  拆成两个 TextView 并列的话换行会对不齐。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <LinearLayout
+            android:layout_width="1440px"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/guide_card"
+            android:orientation="vertical"
+            android:paddingLeft="52px"
+            android:paddingTop="48px"
+            android:paddingRight="52px"
+            android:paddingBottom="48px">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/disclaimer_title"
+                android:textColor="@color/t1"
+                android:textSize="38px"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12px"
+                android:lineSpacingMultiplier="1.3"
+                android:text="@string/disclaimer_sub"
+                android:textColor="@color/t2"
+                android:textSize="24px" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24px"
+                android:orientation="vertical">
+
+                <!-- 1 重点：驾驶安全 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="10px"
+                    android:paddingBottom="10px">
+
+                    <TextView
+                        android:layout_width="34px"
+                        android:layout_height="34px"
+                        android:layout_marginTop="5px"
+                        android:background="@drawable/step_warn"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:text="1"
+                        android:textColor="@color/warn"
+                        android:textSize="19px"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginLeft="20px"
+                        android:layout_weight="1"
+                        android:lineSpacingMultiplier="1.3"
+                        android:text="@string/disclaimer_item1"
+                        android:textColor="@color/t1"
+                        android:textSize="24px" />
+                </LinearLayout>
+
+                <!-- 2 重点：按现状提供（免责） -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="10px"
+                    android:paddingBottom="10px">
+
+                    <TextView
+                        android:layout_width="34px"
+                        android:layout_height="34px"
+                        android:layout_marginTop="5px"
+                        android:background="@drawable/step_warn"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:text="2"
+                        android:textColor="@color/warn"
+                        android:textSize="19px"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginLeft="20px"
+                        android:layout_weight="1"
+                        android:lineSpacingMultiplier="1.3"
+                        android:text="@string/disclaimer_item2"
+                        android:textColor="@color/t1"
+                        android:textSize="24px" />
+                </LinearLayout>
+
+                <!-- 3 开源免费：比照"要看见"，但用强调蓝 —— 琥珀在全站只表示"当心" -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingTop="10px"
+                    android:paddingBottom="10px">
+
+                    <TextView
+                        android:layout_width="34px"
+                        android:layout_height="34px"
+                        android:layout_marginTop="5px"
+                        android:background="@drawable/step_cur"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:text="3"
+                        android:textColor="@color/accent"
+                        android:textSize="19px"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginLeft="20px"
+                        android:layout_weight="1"
+                        android:lineSpacingMultiplier="1.3"
+                        android:text="@string/disclaimer_item3"
+                        android:textColor="@color/t1"
+                        android:textSize="24px" />
+                </LinearLayout>
+
+                <!-- 4 背景事实 · 降一级：仅本车验证的适用范围 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12px"
+                    android:orientation="horizontal"
+                    android:paddingTop="10px"
+                    android:paddingBottom="10px">
+
+                    <TextView
+                        android:layout_width="28px"
+                        android:layout_height="28px"
+                        android:layout_marginTop="5px"
+                        android:background="@drawable/step_todo"
+                        android:gravity="center"
+                        android:includeFontPadding="false"
+                        android:text="4"
+                        android:textColor="@color/t3"
+                        android:textSize="16px" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginLeft="20px"
+                        android:layout_weight="1"
+                        android:lineSpacingMultiplier="1.3"
+                        android:text="@string/disclaimer_item4"
+                        android:textColor="@color/t3"
+                        android:textSize="21px" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24px"
+                android:background="@drawable/guide_note"
+                android:lineSpacingMultiplier="1.5"
+                android:paddingLeft="20px"
+                android:text="@string/disclaimer_note"
+                android:textColor="@color/t3"
+                android:textSize="21px" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24px"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnAgree"
+                    style="@style/Btn.Primary"
+                    android:layout_width="wrap_content"
+                    android:layout_height="72px"
+                    android:text="@string/disclaimer_agree" />
+
+                <Button
+                    android:id="@+id/btnDecline"
+                    style="@style/Btn.Flat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="72px"
+                    android:layout_marginLeft="14px"
+                    android:text="@string/disclaimer_decline" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+</ScrollView>

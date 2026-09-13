@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用清单的一行。对应设计预览页 `dashcast-design-preview.html` 的 `.row`：
+    三列宽度 1fr : 130px : 220px（必须与 panel_apps.xml 的列头一致）
+    行高 76px，左右内边距 10px，8px 圆角
+
+  第一列是「图标块 + 应用名 + 包名」：
+    图标块用占位而不是真实图标 —— 清单由 uid-2000 代理枚举，App 自己受包可见性过滤，
+    拿不到别的包的 icon。底色按包名哈希算（稳定、同一应用每次同一个颜色），字形取名称首字。
+    包名照设计稿保留：它不占地方，却是排查"投的是哪一个包"的唯一线索。
+
+  星标与单选项都是 TextView/View + clickable，不是 Button/RadioButton 控件：
+    focusable="false" + clickable="true" 让它们自己吃掉点击，同时不妨碍
+    ListView 的 onItemClick 处理行的其余部分（点整行才是投屏）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="76px"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingLeft="10px"
+    android:paddingRight="10px">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:id="@+id/rowTile"
+            android:layout_width="56px"
+            android:layout_height="56px"
+            android:background="@drawable/tile">
+
+            <TextView
+                android:id="@+id/rowGlyph"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:includeFontPadding="false"
+                android:textColor="@color/tile_glyph"
+                android:textSize="26px"
+                android:textStyle="bold" />
+        </FrameLayout>
+
+        <!--
+          应用名与包名**紧挨着**排在图标右边（预览页 `.cell1` 是 gap:18px 的行内排列，
+          `.nm` 不占 flex:1），第一列剩下的宽度留白。所以两个都不给 weight：
+          给 weight 会把包名推到列的最右边，与设计稿明显不同。
+          超长的名字/包名各自用 maxEms 截断 —— 相当于 `.nm{min-width:0;text-overflow:ellipsis}`。
+        -->
+        <TextView
+            android:id="@+id/rowLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="18px"
+            android:ellipsize="end"
+            android:maxEms="16"
+            android:singleLine="true"
+            android:textColor="@color/t1"
+            android:textSize="27px" />
+
+        <TextView
+            android:id="@+id/rowPackage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="18px"
+            android:ellipsize="end"
+            android:fontFamily="monospace"
+            android:maxEms="22"
+            android:singleLine="true"
+            android:textColor="@color/t3"
+            android:textSize="20px" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/rowStar"
+        android:layout_width="130px"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="false"
+        android:gravity="center"
+        android:textSize="30px" />
+
+    <FrameLayout
+        android:id="@+id/rowQuick"
+        android:layout_width="220px"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="false">
+
+        <View
+            android:id="@+id/rowQuickDot"
+            android:layout_width="30px"
+            android:layout_height="30px"
+            android:layout_gravity="center"
+            android:background="@drawable/radio_off" />
+    </FrameLayout>
+</LinearLayout>

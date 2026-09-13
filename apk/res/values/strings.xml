@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  文案。与设计预览页 `dashcast-design-preview.html` 的 S1–S5 逐条对应。
+
+  原则（预览页 line 386 起"文案规格"）：
+  - 状态行是**一句话**，正常时只说「仪表盘正在显示：<应用>」，
+    不出现 display N / pid 这类只有开发者看得懂的东西（那些进日志，不进界面）。
+  - 按钮上的字就是点下去会发生的事：「重新连接」不会变成「确定」。
+  - 出现问题时同时给"发生了什么"与"下一步做什么"，不给"出错了"。
+-->
+<resources>
+    <string name="app_name">仪表盘投屏</string>
+
+    <!-- 顶栏状态行（唯一的状态出口） -->
+    <string name="status_locating">正在定位仪表盘屏…</string>
+    <string name="status_no_display">找不到仪表盘屏</string>
+    <string name="status_agent_connecting">正在重新连接代理…</string>
+    <string name="status_agent_offline">注入代理未连接</string>
+    <string name="status_mirror_down">仪表盘 · 镜像未建立</string>
+    <string name="status_showing">仪表盘正在显示：</string>
+    <string name="status_nothing">仪表盘空空如也</string>
+    <string name="status_watching"> · 看门中</string>
+
+    <!-- 预览区空状态 -->
+    <string name="empty_mirror_title">镜像未建立</string>
+    <string name="empty_mirror_body">已连上仪表盘屏，但画面通道没有建立起来。\n通常是投屏服务被系统回收了。</string>
+    <string name="empty_display_title">找不到仪表盘屏</string>
+    <string name="empty_display_body">本机没有识别到第二块显示屏。\n请确认车机处于多屏模式，然后点「重新连接」。</string>
+    <string name="reconnect">重新连接</string>
+    <string name="diagnose">查看诊断</string>
+    <string name="corner_hint">可直接触控</string>
+
+    <!-- 底栏 -->
+    <string name="app_list">应用列表</string>
+    <string name="app_list_title">应用列表</string>
+    <string name="close_list">关闭列表</string>
+    <string name="tab_favorite">收藏</string>
+    <string name="tab_all">全部</string>
+    <string name="col_app">应用</string>
+    <string name="col_favorite">收藏</string>
+    <string name="col_quick">一键启动</string>
+    <string name="list_hint">点整行投屏到仪表盘 · 点星标收藏 · 在收藏项上点圆圈设为一键启动目标</string>
+    <string name="quick_button">一键启动</string>
+    <string name="quick_set">设置一键启动</string>
+    <string name="quick_no_target">还没有选一键启动的应用</string>
+    <string name="snack_go">去选择</string>
+    <string name="exit_control">退出管理</string>
+    <string name="exit_moving">正在把应用搬回主屏：</string>
+
+    <!-- 顶栏图标按钮的无障碍名称 -->
+    <string name="back">返回</string>
+    <string name="home">主页</string>
+
+    <!-- 列表空状态 -->
+    <string name="empty_favorite">还没有收藏\n在「全部」里点应用右边的 ☆ 即可收藏</string>
+    <string name="empty_all">正在向注入代理索取应用清单…</string>
+
+    <!-- 列表行 -->
+    <string name="star_on">★</string>
+    <string name="star_off">☆</string>
+
+    <!-- 瞬时反馈（仍走 Toast：状态行是常驻通道，Toast 负责"刚刚发生了什么"） -->
+    <string name="mirror_failed">镜像失败：</string>
+    <string name="launching">正在投屏：</string>
+    <string name="cast_ok">已投屏：</string>
+    <string name="cast_failed">投屏失败：</string>
+    <string name="favorite_on">已收藏：</string>
+    <string name="favorite_off">已取消收藏：</string>
+    <string name="quick_target_on">一键启动目标：</string>
+    <string name="quick_target_off">已取消一键启动目标</string>
+
+    <!-- 首次打开 · 免责声明（在 ADB 授权之前） -->
+    <string name="disclaimer_title">使用前须知</string>
+    <string name="disclaimer_sub">开始前请读一遍。点「同意并继续」后，本页不再出现。</string>
+    <!--
+      顺序与层级：1/2 是这份声明真正要说的事（粗体引导词 + 逐句换行，写在最前），
+      3 开源免费比照"要看见"，4 是适用范围这类背景事实（在版式上降一级）。
+      四条一样重等于四条都没人看。
+    -->
+    <string name="disclaimer_item1"><b>注意驾驶安全</b>　行驶中请勿操作本界面：投屏只把画面搬到仪表盘上，不代替你驾驶，也不会替你看路。\n需要在本界面点选时，请先确保车辆处于安全状态，或由乘员代为操作。\n投到仪表盘的应用是否适合在仪表盘上显示，由你自行判断。</string>
+    <string name="disclaimer_item2"><b>按现状提供</b>　本应用按「现状」提供，不附带任何明示或暗示的担保，包括但不限于适销性、特定用途适用性与不侵权。\n因安装或使用本应用产生的任何直接、间接、附带、特殊或后果性损失，作者概不负责，包括但不限于车辆损坏、车机异常或失去原厂保修、数据丢失、第三方索赔、罚款或扣分。\n是否使用与如何使用，由你自行判断并承担全部风险；请自行确认你的行为符合当地法律与车机厂商服务条款。\n如不接受以上任何一条，请点「不同意」退出。</string>
+    <!--
+      GPL-3.0 允许任何人有偿再分发，所以这里只能说"作者本人不收费"。
+      写成"未授权任何人收费"就是给许可证加额外限制，GPL-3.0 第 10 条不允许。
+    -->
+    <string name="disclaimer_item3"><b>开源免费</b>　本项目开源免费，遵循 GPL-3.0；若你是付费得到的，说明你被骗了。</string>
+    <string name="disclaimer_item4">仅本车验证：只在 2025 款比亚迪汉智驾版（DiLink 5.0）上测试；其他车型或版本未验证，请自行判断。</string>
+    <string name="disclaimer_note">首次使用会请你在车机上允许一次本机调试，之后每次开机自动连接，不再弹窗。</string>
+    <string name="disclaimer_agree">同意并继续</string>
+    <string name="disclaimer_decline">不同意</string>
+
+    <!-- 授权引导页 -->
+    <string name="guide_title">投屏授权</string>
+    <string name="guide_sub">需要一次性允许本机调试。授权后每次开机都会自动连接，不再弹窗。</string>
+    <string name="guide_step1">打开车机调试开关</string>
+    <string name="guide_step2">在车机弹出的提示上点「允许」</string>
+    <string name="guide_step3">自动连接仪表盘</string>
+    <string name="guide_step1_n">✓</string>
+    <string name="guide_step2_n">2</string>
+    <string name="guide_step3_n">3</string>
+    <string name="guide_note">授权只在本机回环地址（127.0.0.1）上使用，不连接任何外部网络，也不上传数据。\n对话框里必须勾选「一律允许使用这台计算机进行调试」，只点「允许」的话下次打开还会再弹。</string>
+    <string name="guide_start">开始授权</string>
+    <string name="guide_retry">重试</string>
+    <string name="guide_checking">正在检查车机授权…</string>
+    <string name="guide_authorizing">正在请求授权…</string>
+
+    <!-- 引导页右下角的状态点文案 -->
+    <string name="guide_st_checking">正在检查…</string>
+    <string name="guide_st_waiting">等待你在车机上确认…</string>
+    <string name="guide_st_connected">已连接</string>
+    <string name="guide_st_offline">未连接</string>
+
+    <!-- 引导页各状态的标题与说明（详细版原先写死在 Java 里，现在归位到资源） -->
+    <string name="guide_state_auth_title">需要一次性授权</string>
+    <string name="guide_state_auth_body">本应用已生成自己的调试密钥，不会复用任何第三方凭据。\n点下面的「开始授权」后，车机会弹出「允许 USB 调试吗」。</string>
+    <string name="guide_state_adb_title">车机无线 ADB 未开启</string>
+    <string name="guide_state_adb_body">打开路径：车机上的「开发者工具 / 调试工具」里找到无线 ADB 开关并打开，然后回到这里点「重试」。</string>
+    <string name="guide_state_agent_title">已连接，但代理未就绪</string>
+    <string name="guide_state_fail_title">连接失败</string>
+    <string name="guide_state_fail_body">请确认车机无线 ADB 已开启后点「重试」。</string>
+    <string name="guide_state_authing_title">正在请求授权…</string>
+    <string name="guide_state_authing_body">请在这台车机的屏幕上操作：对话框由系统弹出，本应用无法代按。授权完成后本页会自动继续。</string>
+    <string name="guide_state_ok_title">授权完成</string>
+    <string name="guide_state_ok_body">以后不再需要这一步。</string>
+</resources>
