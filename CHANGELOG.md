@@ -3,7 +3,15 @@
 版本号的**唯一来源**是 `apk/AndroidManifest.xml` 的 `versionName`（人读）与 `versionCode`（单调递增，决定能否覆盖安装）。
 本文件、`README.md`、`docs/SOFTWARE_STRUCTURE_ZH.md` 里出现的版本号都必须与它一致；改版本只改 manifest，其它地方只做引用。
 
-> `1.0.0` 与 `3.0.0` 之间还有若干次内部迭代，从未对外发布，因此不在本表中。
+> **为什么公开发布序列从 `1.0.0` 直接跳到 `4.1-cast-reliable`？** 不是漏发，是历史上有两条并行的编号线：
+>
+> | 线 | 编号 | 说明 |
+> | --- | --- | --- |
+> | 公开发布线 | `1.0.0`（versionCode `100`） | 首个公开版本，代理 jar 架构 |
+> | 主开发线 | `1.2-agent-selfheal`（versionCode `3`）→ `3.0-shell-only`（`111`）→ `4.0-passthrough`（`112`）→ `4.1-cast-reliable`（`113`） | 前面若干次迭代只在主开发仓留档，没有对外发过 |
+>
+> 从 `4.1-cast-reliable` 起**统一到 APK 的 manifest**：`versionCode` 单调递增（决定新包能否覆盖安装到已有版本上），`versionName` 同时用作 git tag。
+> 于是 tag 与 manifest 严格一一对应——release 页面写着 `v4.1-cast-reliable`，车上执行 `dumpsys package com.byd.dashcast` 就必须报出 `versionName=4.1-cast-reliable`，不会出现两个说法。
 
 ---
 
