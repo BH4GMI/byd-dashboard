@@ -10,21 +10,21 @@ import android.os.SystemClock;
 import android.util.Log;
 
 /**
- * 开机后把 uid-2000 代理拉起来，让用户不必再插电脑。
+ * 开机后自己把 ADB 特权通道接上，让用户不必再插电脑。
  *
  * 为什么要退避重试，而不是开机跑一次就算：
  * 开机时序里 adbd 并不是一开始就监听 TCP 5555。车机上这条链是
  *   init 读 sys.connect.adb.wiress=1  ->  setprop service.adb.tcp.port 5555  ->  重启 adbd
  * 而 sys.connect.adb.wiress 是 com.byd.appserver（持久化系统应用）在它自己的进程启动时
  * 才写入的（AppServerApplication.onCreate -> startServicesIfNeeded -> WifiAdbDebugMain.start）。
- * 也就是说 BOOT_COMPLETED 到达本程序时，AppServer 很可能还没跑完。所以这里按固定退避重试，
+ * 也就是说 BOOT_COMPLETED 到达我们时，AppServer 很可能还没跑完。所以这里按固定退避重试，
  * 直到连上或次数用尽——每次重试都有明确理由，不是盲目重试。
  */
 public final class BootReceiver extends BroadcastReceiver {
 
     private static final String TAG = "DashCastBoot";
 
-    /** 本程序自己排的重试动作；AlarmManager 只能发 Intent，所以用动作名区分。 */
+    /** 我们自己排的重试动作；AlarmManager 只能发 Intent，所以用动作名区分。 */
     public static final String ACTION_RETRY = "com.byd.dashcast.action.RETRY_AGENT";
 
     private static final String PREFS = "dashcast_boot";
@@ -65,7 +65,7 @@ public final class BootReceiver extends BroadcastReceiver {
                 AdbBootstrap.provision(context, AdbBootstrap.TIMEOUT_BACKGROUND_MS, false);
         Log.i(TAG, "第 " + (attempt + 1) + " 次尝试：" + result);
 
-        if (result.agentRunning) {
+        if (result.isReady()) {
             prefs.edit().putInt(KEY_ATTEMPT, 0).apply();
             return;
         }

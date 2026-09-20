@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  一键目标：固定一个应用，不做成"每个应用都能设一键"。
+
+  包名 / 启动 Activity / 显示名放这里，而不是写死在 Java 里或让用户去列表里选——
+  这是本车机上实测出来的固定入口，改一行就能换应用。
+
+  补点落点表 quick_taps：为什么需要它——有些车机应用把「播放页」做成应用内部的页面，
+  既不开放深链，也不响应语音广播。网易云车机版 6.2.01 实测：
+
+    - voice://netease.audioplayer/player（必须同时带 type=voice/audio，否则解析不到）
+      确实能拉起 com.netease.cloudmusic.audio.launch.IotRedirectActivity，
+      但 RN 侧不认这个路径（music-rn-car.hbc 里 audioplayer / openPlayer 出现 0 次），
+      一律回落首页；加 ?subComponent=vinyl / ?split=vinyl 也一样。
+    - com.byd.action.AUTOVOICE_FULL_SCREEN / OPEN_LYRIC 在清单里有声明，
+      但 BydControlReceiver.onReceive 有一道白名单门（只实现 18 个 action），
+      这几个全在门外，发过去只会回一句"不支持"，是空挂。
+    - ncmcar:// 路由同样落首页。
+
+  唯一稳定的入口是「点首页左栏封面」，所以这里存的是落点。
+
+  格式：包名:横坐标:纵坐标（仪表屏 1920x720 坐标系，与镜像预览区 1:1）。
+  实测于 2026-02，网易云 6.2.01。版本升级后若失效需重测——
+  重测方法：把应用投到仪表屏，抓 display 2 的截图，量出左栏封面中心。
+-->
+<resources>
+    <string name="quick_package">com.netease.cloudmusic.iot</string>
+    <string name="quick_activity">com.netease.cloudmusic.iot.app.LoadingActivity</string>
+    <string name="quick_label">网易云</string>
+
+    <string-array name="quick_taps">
+        <item>com.netease.cloudmusic.iot:318:309</item>
+    </string-array>
+</resources>

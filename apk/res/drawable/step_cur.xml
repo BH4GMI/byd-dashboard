@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 引导页步骤圆点 · 当前。对应预览页 `.sitem.cur .n`：accent 描边，文字 accent。 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="oval">
-    <solid android:color="@android:color/transparent" />
-    <stroke
-        android:width="1.5px"
-        android:color="@color/accent" />
-</shape>

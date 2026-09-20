@@ -28,12 +28,12 @@ import java.util.Arrays;
 import javax.crypto.Cipher;
 
 /**
- * 应用自管理的 ADB 身份（RSA-2048）。
+ * 本机自管理的 ADB 身份（RSA-2048）。
  *
  * 为什么自生成而不是复用原始 APK 里内嵌的那把私钥：那把钥匙是**原作者的凭据**，
- * 复用它等于借用别人的身份，作者轮换或车机重置即失效；而且把别人私钥打进本程序的
+ * 复用它等于借用别人的身份，作者轮换或车机重置即失效；而且把别人私钥打进我们的
  * APK 也不合适。自生成之后，首次连接时车机会弹一次「允许 USB 调试吗」，用户点允许，
- * 本程序的公钥就进了 /data/misc/adb/adb_keys —— 此后永久有效，不再弹框。
+ * 我们的公钥就进了 /data/misc/adb/adb_keys —— 此后永久有效，不再弹框。
  *
  * 私钥只存在本应用私有目录（/data/data/<pkg>/files/adb_identity），不导出、不联网。
  */
@@ -52,29 +52,11 @@ public final class AdbKeyStore {
     private final PrivateKey privateKey;
     private final RSAPublicKey publicKey;
     private final boolean freshlyCreated;
-    /** 身份被重建的原因；null 表示本次沿用了已有身份。 */
-    private final String resetReason;
 
     private AdbKeyStore(PrivateKey priv, RSAPublicKey pub, boolean created) {
-        this(priv, pub, created, null);
-    }
-
-    private AdbKeyStore(PrivateKey priv, RSAPublicKey pub, boolean created, String resetReason) {
         this.privateKey = priv;
         this.publicKey = pub;
         this.freshlyCreated = created;
-        this.resetReason = resetReason;
-    }
-
-    /**
-     * 本次是不是把已有身份丢了重建；重建则返回原因，沿用则返回 null。
-     *
-     * 这条信息必须能冒到界面上：身份一换，车机上那把已授权的旧钥匙立刻作废，
-     * 用户必然要再授权一次。此前这件事完全静默——界面只说「需要授权」，看不出
-     * 是"没授权过"还是"授权过但钥匙被换掉了"。
-     */
-    public String resetReason() {
-        return resetReason;
     }
 
     public PrivateKey privateKey() {
@@ -123,19 +105,13 @@ public final class AdbKeyStore {
             return bundled;
         }
 
-        String resetReason = null;
         File file = new File(context.getFilesDir(), FILE_NAME);
         if (file.isFile()) {
             AdbKeyStore existing = tryLoad(file);
             if (existing != null) {
                 return existing;
             }
-            // 文件在，却读不出来或公私不配对。这里以前是**静默**删掉重建的：身份一换，
-            // 车机上那把已授权的旧钥匙立刻作废，用户必须再授权一次，而日志和界面里
-            // 看不出任何异常。现在把原因留下，由调用方冒给用户。
-            resetReason = "已存的 ADB 身份文件不可用（" + file.length()
-                    + " 字节），已重新生成密钥对；车机上需要重新授权一次";
-            Log.w(TAG, resetReason, null);
+            // 文件损坏或公私不配对：删掉重来，比带着半截状态跑要好。
             file.delete();
         }
 
@@ -149,13 +125,13 @@ public final class AdbKeyStore {
             throw new GeneralSecurityException("刚生成的密钥对自检失败");
         }
         write(file, priv, pub);
-        return new AdbKeyStore(priv, pub, true, resetReason);
+        return new AdbKeyStore(priv, pub, true);
     }
 
     /**
      * 自检：用**真实的签名路径**签一个 token，再用公钥还原比对。
      *
-     * 为什么必须有这一步：私钥与公钥一旦不配对，本程序发出去的公钥会被 adbd 存下，
+     * 为什么必须有这一步：私钥与公钥一旦不配对，我们发出去的公钥会被 adbd 存下，
      * 但每次签名都验不过，现象是"每一条连接都重新弹授权框、却又总能连上"——
      * 表面上功能正常，实际上一直在借系统自动放行，极度难查。这里一次验死。
      */
@@ -263,69 +239,19 @@ public final class AdbKeyStore {
         }
     }
 
-    /**
-     * 把身份写到介质上——**必须耐久，而且必须原子**。
-     *
-     * 原实现是 `new FileOutputStream(file)` 直接覆写：先截断再写，中间掉电只剩半截；
-     * 更要命的是没有 fsync，页缓存里还没落到介质的数据一旦丢失，文件会以「长度正确、
-     * 内容全 0」的形态回来（远端出现过等长的全 0 文件）。
-     * 身份文件读回是 0 时 {@link #tryLoad} 返回 null，{@link #loadOrCreate} 就换一把
-     * 新钥匙——车机上的旧授权立刻失效，于是「每次打开都要重新授权」。
-     *
-     * 所以这里改成：写临时文件 → fsync 落到介质 → rename 原子替换（POSIX 的 rename
-     * 覆盖目标，掉电后要么是旧的完好身份、要么是新的完好身份，不存在半截）→ 回读
-     * 逐字节核对。写完就核，是因为只看长度的判据对"长度对、内容全 0"的文件无效。
-     */
     private static void write(File file, PrivateKey priv, RSAPublicKey pub) throws IOException {
         String content = Base64.encodeToString(priv.getEncoded(), Base64.NO_WRAP)
                 + "\n"
                 + Base64.encodeToString(pub.getEncoded(), Base64.NO_WRAP)
                 + "\n";
-        byte[] data = content.getBytes(UTF8);
-
-        File tmp = new File(file.getParentFile(), FILE_NAME + ".tmp");
         FileOutputStream out = null;
         try {
-            out = new FileOutputStream(tmp);
-            out.write(data);
+            out = new FileOutputStream(file);
+            out.write(content.getBytes(UTF8));
             out.flush();
-            out.getFD().sync();
         } finally {
             if (out != null) {
                 out.close();
-            }
-        }
-
-        if (!tmp.renameTo(file)) {
-            // 少数实现上 rename 不覆盖已存在的目标，退一步显式删除再改名。
-            if (!(file.delete() && tmp.renameTo(file))) {
-                tmp.delete();
-                throw new IOException("无法把 ADB 身份落定到 " + file);
-            }
-        }
-
-        byte[] back = readAll(file);
-        if (!Arrays.equals(back, data)) {
-            throw new IOException("ADB 身份回读不一致：写入 " + data.length
-                    + " 字节，读回 " + back.length + " 字节");
-        }
-    }
-
-    /** 整份读回，用于写入后的逐字节核对。 */
-    private static byte[] readAll(File file) throws IOException {
-        FileInputStream in = null;
-        try {
-            in = new FileInputStream(file);
-            ByteArrayOutputStream buf = new ByteArrayOutputStream((int) file.length());
-            byte[] chunk = new byte[4096];
-            int n;
-            while ((n = in.read(chunk)) > 0) {
-                buf.write(chunk, 0, n);
-            }
-            return buf.toByteArray();
-        } finally {
-            if (in != null) {
-                in.close();
             }
         }
     }
@@ -339,17 +265,8 @@ public final class AdbKeyStore {
      *   uint32 n0inv                 = -1 / n[0] mod 2^32
      *   uint8  n[nwords*4]           模数，小端
      *   uint32 rr[nwords]            = (2^(32*nwords))^2 mod n，小端
-     *   uint32 exponent              公钥指数，小端
      *
-     * 2048 位密钥的结构体长度为 4+4+256+256+4 = **524** 字节，也就是 adbd 的
-     * ANDROID_PUBKEY_ENCODED_SIZE。**指数必须写进去**：adbd 在
-     * daemon/auth.cpp 里对 adb_keys 的每一行做
-     *
-     *   if (b64_pton(pubkey, keybuf, sizeof(keybuf)) != ANDROID_PUBKEY_ENCODED_SIZE)
-     *       LOG(ERROR) << "Invalid base64 key " << pubkey;
-     *
-     * 只要解码长度不是 524，整条密钥就被当成垃圾丢掉——写进 adb_keys 也永不生效，
-     * 现象就是"每次连接都重新弹授权框"。少写这 4 字节正是这个现象的根因。
+     * 注意这里**不带指数**：adb 约定指数恒为 65537。
      */
     static byte[] publicKeyBlob(RSAPublicKey key) {
         BigInteger n = key.getModulus();
@@ -369,14 +286,11 @@ public final class AdbKeyStore {
         BigInteger rr = r.multiply(r).mod(n);
         byte[] rrBytes = AdbClient.toLittleEndian(rr, bytes);
 
-        int rrOff = 8 + bytes;
-        int eOff = rrOff + bytes;
-        byte[] out = new byte[eOff + 4];
+        byte[] out = new byte[8 + bytes + bytes];
         putUInt32LE(out, 0, nwords);
         putUInt32LE(out, 4, n0inv.longValue());
         System.arraycopy(nBytes, 0, out, 8, bytes);
-        System.arraycopy(rrBytes, 0, out, rrOff, bytes);
-        putUInt32LE(out, eOff, key.getPublicExponent().longValue());
+        System.arraycopy(rrBytes, 0, out, 8 + bytes, bytes);
         return out;
     }
 

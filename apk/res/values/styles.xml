@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  界面主题与控件样式。
+  界面主题。
 
-  为什么要在 manifest 里声明主题、而不是运行时 setTheme()：
+  为什么要在 manifest 里声明、而不是运行时 setTheme()：
   「窗口是否半透明」和「窗口背景」在窗口创建时就按 manifest 主题定死了，
-  onCreate 里的 setTheme() 改不动它们。
+  onCreate 里的 setTheme() 改不动它们。实测：首开自动分支里调
+  setTheme(Theme_Translucent_NoTitleBar)，主屏仍然黑屏约 2 秒（逐帧采样平均亮度 1.1）。
 
-  这里保留 DeviceDefault 的控件外观基线（只加半透明 + 透明背景），
-  按钮的最终外观由下面的 Btn* 样式统一接管。
-
-  按钮样式存在的理由：DeviceDefault 的 Button 自带最小宽高、内边距、全大写、
-  阴影和按下动画，这四条都会让按钮长得和设计稿不一样。与其在 8 个按钮上重复写 12 条
-  属性，不如在这里写一次 —— 预览页里的 `.btn` 与这里的 Btn 是同一份规格。
+  这里保留 DeviceDefault 的控件外观（只加半透明 + 透明背景），所以界面按钮的样式不变；
+  界面自己的根布局本来就是不透明黑底，正常界面看起来与之前一致。
+  首开自动那条路径不 setContentView，于是整块窗口全透明，用户看不见。
 -->
 <resources>
     <style name="CastTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -20,79 +18,5 @@
         <item name="android:backgroundDimEnabled">false</item>
         <item name="android:backgroundDimAmount">0.0</item>
         <item name="android:windowContentOverlay">@null</item>
-    </style>
-
-    <!-- 对应预览页 `.btn`：panel2 底 + line2 描边 + 8px 圆角，字号 27px。 -->
-    <style name="Btn" parent="@android:style/Widget.DeviceDefault.Button">
-        <item name="android:background">@drawable/btn</item>
-        <item name="android:textColor">@color/t1</item>
-        <item name="android:textSize">27px</item>
-        <item name="android:gravity">center</item>
-        <item name="android:minWidth">0dp</item>
-        <item name="android:minHeight">0dp</item>
-        <item name="android:paddingLeft">26px</item>
-        <item name="android:paddingRight">26px</item>
-        <item name="android:paddingStart">26px</item>
-        <item name="android:paddingEnd">26px</item>
-        <item name="android:paddingTop">0dp</item>
-        <item name="android:paddingBottom">0dp</item>
-        <item name="android:includeFontPadding">false</item>
-        <item name="android:textAllCaps">false</item>
-        <item name="android:stateListAnimator">@null</item>
-        <item name="android:letterSpacing">0</item>
-    </style>
-
-    <!-- 对应 `.btn.primary`。 -->
-    <style name="Btn.Primary">
-        <item name="android:background">@drawable/btn_primary</item>
-        <item name="android:textColor">@color/tile_glyph</item>
-        <item name="android:textStyle">bold</item>
-    </style>
-
-    <!-- 对应 `.btn.flat`。 -->
-    <style name="Btn.Flat">
-        <item name="android:background">@drawable/btn_flat</item>
-    </style>
-
-    <!--
-      顶栏图标按钮：对应 `.appTop .btn.icon{width:56px;height:56px}`。
-      padding 14px 让 27px 的字形落在 28px 的方框里居中（56-2*14=28）。
-    -->
-    <style name="Btn.Icon">
-        <item name="android:background">@drawable/btn</item>
-        <item name="android:padding">14px</item>
-        <item name="android:paddingStart">14px</item>
-        <item name="android:paddingEnd">14px</item>
-        <item name="android:scaleType">fitCenter</item>
-        <item name="android:tint">@color/t1</item>
-    </style>
-
-    <!-- 应用列表列头：对应 `.colhead`。 -->
-    <style name="ColHead">
-        <item name="android:textColor">@color/t3</item>
-        <item name="android:textSize">21px</item>
-        <item name="android:letterSpacing">0.024</item>
-        <item name="android:singleLine">true</item>
-    </style>
-
-    <!-- 分段控件的两半：对应 `.seg span`。 -->
-    <style name="SegItem">
-        <item name="android:button">@null</item>
-        <item name="android:textSize">24px</item>
-        <item name="android:textColor">@color/seg_text</item>
-        <item name="android:gravity">center</item>
-        <item name="android:height">56px</item>
-        <item name="android:paddingLeft">26px</item>
-        <item name="android:paddingRight">26px</item>
-        <item name="android:paddingStart">26px</item>
-        <item name="android:paddingEnd">26px</item>
-        <item name="android:minWidth">0dp</item>
-        <item name="android:minHeight">0dp</item>
-        <item name="android:background">@drawable/seg_left</item>
-    </style>
-
-    <!-- 右侧那半只换背景，其余同 SegItem。 -->
-    <style name="SegItem.Right">
-        <item name="android:background">@drawable/seg_right</item>
     </style>
 </resources>

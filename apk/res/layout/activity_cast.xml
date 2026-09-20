@@ -1,289 +1,139 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  主屏上的仪表盘管理界面。版式与设计预览页 `dashcast-design-preview.html` 的 S1 逐块对应：
+  主屏上的仪表盘管理界面。
 
-    顶栏 88px   应用图标 · 「仪表盘投屏」 · 竖线 · 状态行 · 【返回】【主页】
-    stage       (weight) 预览 1920x720 居中，外加应用列表浮层
-    底栏 96px   【应用列表】 ······ 【一键启动：X】【退出管理】
-    合计 88 + 720 + 96 = 904 ≤ 907，余 3px 由 stage 吸收（预览上下各留 1.5px）
+  根是**竖向 LinearLayout**：预览区 weight=1 占满操作条以上的空间，操作条是它的兄弟。
+  这样预览的居中发生在"操作条以上的那块空间"里，不需要任何魔法数字。
 
-  尺寸单位一律用 px：车机固定 1920x1080 @240dpi（1dp = 1.5px），预览页里的数字就是真机
-  px 数，直接照抄不会引入换算误差；sp 只用于需要跟随系统字体缩放的场合，这里不需要。
+  之前根是 FrameLayout + 操作条 layout_gravity="bottom"，两者互相叠加：
+  预览 center_vertical 落在 y=177..897，操作条从 y=894 起把最下 3 行盖住
+  （操作条半透明，实测那 3 行的画面被衰减到剩余 5.9%）。改成本结构后 720 行全部可见，
+  而且操作条高度将来一变，预览自动跟随，不会重新压上去。
 
-  **stage 内部子视图顺序是有意义的，不要调整**：
-    预览(TextureView) → 触控板(touchPanel) → 空状态(emptyState) → 提示条(snackBar)
-    → 角标(cornerHint) → 应用面板(panel_apps)
-  触控板必须压在预览之上：裸 View 收不到 onTouch，必须是带背景的 FrameLayout，
-  且顺序排在预览之后。空状态压在触控板之上并 clickable=true，这样"镜像没建立"
-  时手指不会盲注进仪表屏。
+  **预览区内部子视图顺序是有意义的，不要调整**（已实测）：
+    预览(TextureView) → 预览降级(ImageView) → 触控板(touchPanel) → 应用面板
+  触控板必须压在预览之上、应用面板之下。早期把触控板写成裸 View 时
+  onTouch 完全不触发，改成带背景的 FrameLayout 并保持这个顺序后才通。
+  两个预览视图重叠、**互斥显示**（同一时刻只有一个 visible），先后无所谓，
+  但都要待在触控板之下。
 
-  预览区仍是 1:1 的 1920x720 版式（对齐原版 activity_touch.xml）：画面来自对仪表屏的
-  实时镜像，触控板与仪表屏坐标一一对应，不需要换算。
+  预览区是 1:1 的 1920x720 版式，与仪表屏同尺寸，所以触控板的 View 局部坐标
+  就是仪表屏坐标，不需要任何换算。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg"
+    android:background="@android:color/black"
     android:orientation="vertical">
 
-    <!-- ================= 顶栏 88px ================= -->
-    <LinearLayout
-        android:id="@+id/barTop"
-        android:layout_width="match_parent"
-        android:layout_height="88px"
-        android:background="@drawable/bar_top"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingLeft="24px"
-        android:paddingRight="24px">
-
-        <!--
-          这里原来放了一个 36px 的应用图标（外层 36 裁切内层 54 的 mipmap）。
-          删掉的原因：**AdaptiveIconDrawable 放进普通 ImageView 不会被遮罩**，
-          它按整张 108 画布渲染，于是图标在应用内长得和启动器里不一样（蓝色方块偏大、
-          白色字形偏小）—— 一个"看起来像但明显不对"的图标比没有图标更糟。
-          启动器图标（mipmap-anydpi-v26）不受影响，那边由系统负责裁切。
-        -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:letterSpacing="0.01"
-            android:text="@string/app_name"
-            android:textColor="@color/t1"
-            android:textSize="30px"
-            android:textStyle="bold" />
-
-        <View
-            android:layout_width="1px"
-            android:layout_height="34px"
-            android:layout_marginLeft="24px"
-            android:layout_marginRight="16px"
-            android:background="@color/line2" />
-
-        <!-- 状态行：全应用唯一的状态出口。圆点颜色由 refreshStatus() 按语义着色。 -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <View
-                android:id="@+id/statusDot"
-                android:layout_width="11px"
-                android:layout_height="11px"
-                android:background="@drawable/dot" />
-
-            <TextView
-                android:id="@+id/status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginLeft="11px"
-                android:singleLine="true"
-                android:text="@string/status_locating"
-                android:textColor="@color/t2"
-                android:textSize="24px" />
-        </LinearLayout>
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1px"
-            android:layout_weight="1" />
-
-        <ImageButton
-            android:id="@+id/btnBack"
-            style="@style/Btn.Icon"
-            android:layout_width="56px"
-            android:layout_height="56px"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_back" />
-
-        <ImageButton
-            android:id="@+id/btnHome"
-            style="@style/Btn.Icon"
-            android:layout_width="56px"
-            android:layout_height="56px"
-            android:layout_marginLeft="16px"
-            android:contentDescription="@string/home"
-            android:src="@drawable/ic_home" />
-    </LinearLayout>
-
-    <!-- ================= stage ================= -->
     <FrameLayout
         android:id="@+id/stage"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <FrameLayout
-            android:id="@+id/previewBox"
+        <!--
+          主预览：GPU 直通。uid 2000 的特权进程把仪表盘那块屏（display 2）的 layerStack
+          挂到它新建的 SurfaceControl display 上，再把输出接到本视图的 Surface ——
+          没有抓帧、没有编码、没有 CPU 回读。这也是原版 Just Dashboard 的做法。
+        -->
+        <TextureView
+            android:id="@+id/preview"
             android:layout_width="match_parent"
             android:layout_height="720px"
             android:layout_gravity="center_vertical"
-            android:background="@color/preview_bg"
-            android:foreground="@drawable/preview_border">
+            android:contentDescription="@string/preview_desc" />
 
-            <TextureView
-                android:id="@+id/preview"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent" />
+        <!--
+          降级预览：特权进程起不来、或它拒绝这块 Surface 时改用 screencap 抓帧
+          （实测 3.2~3.5 fps）。**默认 gone**，由界面在两个视图之间显式切换 ——
+          不靠"空 TextureView 会透出底下"这种厂商相关的行为，不能赌。
+        -->
+        <ImageView
+            android:id="@+id/previewFallback"
+            android:layout_width="match_parent"
+            android:layout_height="720px"
+            android:layout_gravity="center_vertical"
+            android:contentDescription="@string/preview_desc"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
 
-            <!--
-              触控板：与仪表屏 1:1，手指落点直接就是仪表屏坐标。
-              背景必须显式给一个色（哪怕全透明），否则这个 View 不参与命中测试。
-            -->
-            <FrameLayout
-                android:id="@+id/touchPanel"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="#00000000" />
-
-            <!--
-              空状态：盖住整个预览区，自带 preview_bg 底，因此不依赖 TextureView
-              在"还没有帧"时画出什么颜色（浅色主题下尤其重要）。
-              clickable=true 是故意的：镜像没建立时不把触摸盲注到仪表屏。
-            -->
-            <LinearLayout
-                android:id="@+id/emptyState"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@color/preview_bg"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:orientation="vertical"
-                android:visibility="gone">
-
-                <TextView
-                    android:id="@+id/emptyTitle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:text="@string/empty_mirror_title"
-                    android:textColor="@color/t1"
-                    android:textSize="34px"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/emptyBody"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14px"
-                    android:gravity="center"
-                    android:lineSpacingMultiplier="1.4"
-                    android:text="@string/empty_mirror_body"
-                    android:textColor="@color/t2"
-                    android:textSize="24px" />
-
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="30px"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btnReconnect"
-                        style="@style/Btn.Primary"
-                        android:layout_width="wrap_content"
-                        android:layout_height="72px"
-                        android:text="@string/reconnect" />
-
-                    <Button
-                        android:id="@+id/btnDiagnose"
-                        style="@style/Btn.Flat"
-                        android:layout_width="wrap_content"
-                        android:layout_height="72px"
-                        android:layout_marginLeft="14px"
-                        android:text="@string/diagnose" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- 提示条（S4：按了「设置一键启动」但还没选过目标）。 -->
-            <LinearLayout
-                android:id="@+id/snackBar"
-                android:layout_width="wrap_content"
-                android:layout_height="76px"
-                android:layout_gravity="bottom|center_horizontal"
-                android:layout_marginBottom="24px"
-                android:background="@drawable/snack_bg"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingLeft="28px"
-                android:paddingRight="16px"
-                android:visibility="gone">
-
-                <TextView
-                    android:id="@+id/snackMsg"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/quick_no_target"
-                    android:textColor="@color/t1"
-                    android:textSize="24px" />
-
-                <Button
-                    android:id="@+id/snackGo"
-                    style="@style/Btn.Primary"
-                    android:layout_width="wrap_content"
-                    android:layout_height="56px"
-                    android:layout_marginLeft="30px"
-                    android:text="@string/snack_go"
-                    android:textSize="24px" />
-            </LinearLayout>
+        <FrameLayout
+            android:id="@+id/touchPanel"
+            android:layout_width="match_parent"
+            android:layout_height="720px"
+            android:layout_gravity="center_vertical"
+            android:background="#1A2E9BFF">
 
             <TextView
-                android:id="@+id/cornerHint"
+                android:id="@+id/touchHint"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="bottom|right"
-                android:layout_marginRight="24px"
-                android:layout_marginBottom="20px"
-                android:text="@string/corner_hint"
-                android:textColor="@color/corner"
-                android:textSize="21px" />
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="@string/touchpad_hint"
+                android:textColor="#80FFFFFF"
+                android:textSize="22sp" />
         </FrameLayout>
 
         <include layout="@layout/panel_apps" />
     </FrameLayout>
 
-    <!-- ================= 底栏 96px ================= -->
     <LinearLayout
-        android:id="@+id/barBottom"
+        android:id="@+id/bar"
         android:layout_width="match_parent"
-        android:layout_height="96px"
-        android:background="@drawable/bar_bottom"
+        android:layout_height="wrap_content"
+        android:background="#FF101418"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingLeft="24px"
-        android:paddingRight="24px">
+        android:padding="8dp">
 
-        <Button
-            android:id="@+id/btnApps"
-            style="@style/Btn"
-            android:layout_width="wrap_content"
-            android:layout_height="72px"
-            android:drawableLeft="@drawable/ic_menu"
-            android:drawablePadding="10px"
-            android:drawableTint="@color/t1"
-            android:text="@string/app_list" />
-
-        <View
+        <TextView
+            android:id="@+id/status"
             android:layout_width="0dp"
-            android:layout_height="1px"
-            android:layout_weight="1" />
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/status_waiting"
+            android:textColor="@android:color/white"
+            android:textSize="16sp" />
+
+        <Switch
+            android:id="@+id/swAuto"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="8dp"
+            android:text="@string/auto_short"
+            android:textColor="@android:color/white"
+            android:textSize="14sp" />
 
         <Button
             android:id="@+id/btnQuick"
-            style="@style/Btn.Primary"
             android:layout_width="wrap_content"
-            android:layout_height="72px"
-            android:singleLine="true"
-            android:text="@string/quick_set" />
+            android:layout_height="wrap_content"
+            android:text="@string/quick_prefix" />
+
+        <Button
+            android:id="@+id/btnApps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_list" />
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/back" />
+
+        <Button
+            android:id="@+id/btnHome"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/home" />
 
         <Button
             android:id="@+id/btnExit"
-            style="@style/Btn.Flat"
             android:layout_width="wrap_content"
-            android:layout_height="72px"
-            android:layout_marginLeft="14px"
+            android:layout_height="wrap_content"
             android:text="@string/exit_control" />
     </LinearLayout>
 </LinearLayout>

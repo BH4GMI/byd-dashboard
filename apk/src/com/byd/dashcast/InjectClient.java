@@ -1,52 +1,59 @@
 package com.byd.dashcast;
 
-import android.os.IBinder;
-import android.os.Parcel;
-import android.os.RemoteException;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.util.Log;
-import android.view.Surface;
+
+import com.byd.dashcast.ShellChannel.AppEntry;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 与 uid-2000 注入代理通信的客户端。
+ * 特权能力客户端（**降级路径**）。
  *
- * 通道是 Binder，不是 LocalSocket：句柄由代理通过广播送过来
- * （sendBroadcast 带 IBinder extra，原版 b.smali:2403-2460 的做法），之后本端直接
- * transact。Binder 由内核驱动裁决，不经过 SELinux 的 unix socket 策略，
- * 而且代理侧能用 Binder.getCallingUid() 把调用方钉死在本应用。
+ * <h3>2026-09-20：实现从「Binder 调代理」改成「长连接跑 shell 命令」</h3>
+ * 公开方法签名保持不变，所以界面层几乎不用动。换掉的只有内部实现：
  *
- * 触摸用 FLAG_ONEWAY：代理不需要回执，UI 线程发完即走，240Hz 的拖动不会造成卡顿，
- * 也就不需要额外的写线程和队列。
+ * <pre>
+ *   旧：广播收 Binder → transact(TRANSACT_*) → uid 2000 代理进程
+ *   新：ShellChannel.run("am ..." / "input ..." / "dumpsys ...")
+ * </pre>
+ *
+ * <p>换掉的**理由**是旧路有一条不可观测的隐藏状态：代理用全局 {@code lastContact}
+ * 决定"还要不要广播句柄"，于是先连上的客户端把代理钉住、后启动的客户端永远拿不到句柄
+ * （实测：车机重启后 netease 分支先自启占住代理，母工程晚 18 分钟启动就再也连不上，
+ * 界面永远停在"注入代理未连接"）。shell 命令没有这类状态，每条都有自己的返回。
+ *
+ * <h3>看门挪到了本端</h3>
+ * 代理不在了，没人替我们巡检"任务是否被应用自己拽回主屏"，所以改由 {@link #ping()}
+ * 承担：它在心跳里被周期调用，发现跑掉就用 {@code am display move-stack} 搬回。
+ * 实测 {@code dumpsys} 在设备端过滤后只要 0.03s，每秒一次不构成负担。
+ *
+ * <h3>2026-09-20 晚：它变成**降级路径**</h3>
+ * "去代理"的前提错了 —— 有两条腿 shell 走不动：触摸（{@code input} 每个事件 fork 一个
+ * ART，本车实测 40~140 ms/次）和预览（{@code screencap} 只有 3.2~3.5 fps）。两条的
+ * 正解都是 uid 2000 里跑代码，也就是反编译原版 Just Dashboard 看到的做法。
+ * 于是 {@link PrivilegedClient} 接管了触摸与预览，本类退回兜底：
+ * 特权进程起不来时，触摸走 {@code input motionevent}、预览走 {@code screencap} 抓帧。
+ *
+ * <p>仍然由本类独占的能力：**看门**（{@code am display move-stack}）、
+ * **判页抓帧**（{@link DashboardEye} 补点闭环要读画面）、以及应用/任务清单（{@code dumpsys}）。
  */
 public final class InjectClient {
 
     private static final String TAG = "dashcast";
-    private static final String DESCRIPTOR = "com.byd.dashcast.agent.AgentBinder";
-
-    private static final int TRANSACT_PING = IBinder.FIRST_CALL_TRANSACTION;
-    private static final int TRANSACT_SET_DISPLAY = IBinder.FIRST_CALL_TRANSACTION + 1;
-    private static final int TRANSACT_TOUCH = IBinder.FIRST_CALL_TRANSACTION + 2;
-    private static final int TRANSACT_KEY = IBinder.FIRST_CALL_TRANSACTION + 3;
-    private static final int TRANSACT_LAUNCH = IBinder.FIRST_CALL_TRANSACTION + 4;
-    private static final int TRANSACT_LIST_APPS = IBinder.FIRST_CALL_TRANSACTION + 5;
-    private static final int TRANSACT_START_MIRROR = IBinder.FIRST_CALL_TRANSACTION + 6;
-    private static final int TRANSACT_STOP_MIRROR = IBinder.FIRST_CALL_TRANSACTION + 7;
-    private static final int TRANSACT_WATCH = IBinder.FIRST_CALL_TRANSACTION + 8;
-    private static final int TRANSACT_UNWATCH = IBinder.FIRST_CALL_TRANSACTION + 9;
-    private static final int TRANSACT_TASK_DISPLAY = IBinder.FIRST_CALL_TRANSACTION + 10;
-    private static final int TRANSACT_MOVE_TO_DISPLAY = IBinder.FIRST_CALL_TRANSACTION + 11;
 
     /**
-     * 代理侧的看门状态。PING 的回执里带回来，状态栏据此显示——
-     * 看门如果静默失效，用户只会看到"投屏又跑回主屏了"却不知道为什么。
+     * 看门状态。界面状态栏据此显示 —— 看门若静默失效，用户只会看到"投屏又跑回主屏了"
+     * 却不知道为什么。
      */
     public static final class WatchState {
         public final boolean watching;
         public final int moves;
         public final String note;
-        /** 正在被看门的包名；空串表示没有。界面据此认领代理侧残留的看门。 */
+        /** 正在被看门的包名；空串表示没有。 */
         public final String packageName;
 
         WatchState(boolean watching, int moves, String note, String packageName) {
@@ -67,406 +74,461 @@ public final class InjectClient {
         void onApps(List<AppRepo.Entry> apps);
     }
 
-    /** 镜像结果：成功时 message 为 null。 */
-    public interface MirrorCallback {
-        void onResult(boolean success, String message);
+    /**
+     * 预览帧回调。**全部在预览线程上回调**：实现方可以直接在这条线程上解码
+     * （PNG 解码是纯 CPU 活，放 UI 线程会直接卡住界面），解完再自己切回 UI 线程。
+     */
+    public interface FrameCallback {
+        /** 一帧 PNG 字节。 */
+        void onFrame(byte[] png);
+
+        /**
+         * 预览不可用。连续失败只在**首次**回调一次，恢复后再失败会重新报：
+         * 既不刷屏，也不让"预览断了"这件事静默过去。
+         */
+        void onFailed(String message);
     }
 
-    private volatile IBinder binder;
+    private final ShellChannel shell = ShellChannel.get();
+    private final Context context;
 
-    /** 最近一次握手/心跳拿到的看门状态；attach 后界面可据此认领代理侧残留的看门。 */
     private volatile WatchState lastWatch;
+
+    /**
+     * 看门窗口：只覆盖"启动之后应用可能自己跳走"的自适应期。
+     *
+     * <p>为什么必须**有界**：看门无法区分"应用自己跑掉"和"用户手动搬走"。
+     * 无限期看门的后果是用户在桌面上点该应用、从最近任务里拉它都会被 1 秒内搬回副屏，
+     * 表现为"按了回不到前台" —— 这是实测踩过的坑，也是看门最容易被误解成"补丁"的地方。
+     */
+    private static final long WATCH_WINDOW_MS = 20000L;
+
+    /** 窗口内又发生了一次搬回（说明应用还在乱跳）就顺延这么多。 */
+    private static final long WATCH_EXTEND_MS = 8000L;
+
+    /** 看门总时长硬上限：无论怎么顺延都不越过它。 */
+    private static final long WATCH_MAX_TOTAL_MS = 45000L;
+
+    // ---- 看门状态（本端维护，不再有代理回执）--------------------------------
+    private volatile String watchedPackage;
+    private volatile int watchedDisplay = -1;
+    private volatile int watchMoves;
+    private volatile String watchNote = "";
+    private volatile long watchStartedAt;
+    private volatile long watchDeadline;
+
+    /** 每条命令都要带 display，touch 这条老接口没有 display 参数，所以记住它。 */
+    private volatile int currentDisplay = -1;
+
+    /**
+     * 仪表盘**实际显示内容**的那块屏（主投影屏），由界面解析完 display 拓扑后告知。
+     *
+     * <p>它是 {@link #inputDisplay()} 的兜底：连"窗口挂在哪块屏"都解析不出来时，
+     * 至少指仪表盘，而不是指必然全黑的投屏槽位。未告知时为 -1。
+     */
+    private volatile int projectionDisplay = -1;
+
+    /**
+     * 告知主投影屏。界面在 {@code DashboardSession.resolve()} 之后调用。
+     *
+     * <p>值变了才清输入屏缓存：会话换了，上一个包"窗口挂在哪块屏"的结论不再成立；
+     * 没变就保持缓存，否则每次 resume 都要重新 dumpsys 一次。
+     */
+    public void setProjectionDisplay(int displayId) {
+        if (projectionDisplay == displayId) {
+            return;
+        }
+        projectionDisplay = displayId;
+        shell.forgetInputDisplay();
+    }
+
+    public InjectClient(Context context) {
+        this.context = context.getApplicationContext();
+    }
 
     public WatchState lastWatch() {
         return lastWatch;
     }
 
-    /** 由广播接收器送入代理的 Binder 句柄；同一句柄重复送达时直接忽略。 */
-    public void attach(IBinder agentBinder) {
-        if (agentBinder == binder) {
-            return;
-        }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            agentBinder.transact(TRANSACT_PING, data, reply, 0);
-            reply.readException();
-            int agentUid = reply.readInt();
-            int displayId = reply.readInt();
-            boolean watching = reply.readInt() != 0;
-            int moves = reply.readInt();
-            String note = reply.readString();
-            String watched = reply.readString();
-            this.binder = agentBinder;
-            Log.i(TAG, "注入代理已就绪：uid=" + agentUid + " display=" + displayId
-                    + " 看门=" + watching + "(" + watched + ") 已搬回=" + moves + " 备注=" + note);
-            lastWatch = new WatchState(watching, moves, note, watched);
-        } catch (Throwable t) {
-            Log.w(TAG, "与注入代理握手失败", t);
-            this.binder = null;
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
-
+    /** 通道是否可用。旧语义是"代理句柄是否在手"，现在是"shell 连接是否活着"。 */
     public boolean isAttached() {
-        return binder != null;
+        return shell.isReady();
     }
 
     /**
-     * 心跳，同时把代理的看门状态取回来。代理在 5 秒收不到任何调用时会重新广播 Binder
-     * （用于 App 重启后自愈）；前台定期 PING 既保持代理安静，也顺带刷新状态栏。
+     * 心跳：顺带做一次看门巡检。
      *
-     * 同步调用：与 {@link #attach} 一样跑在调用线程上，代理侧处理只是写几个字段。
+     * <p>发现被看门的包已经不在目标屏上，就搬回去；**窗口一到就自动松开**，
+     * 把控制权还给用户。跑在调用线程上（界面侧的心跳线程），内部是一条
+     * {@code dumpsys}（设备端过滤后 ~50 行）+ 可能的 {@code move-stack}。
      */
     public WatchState ping() {
-        IBinder target = binder;
-        if (target == null) {
-            return null;
-        }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            target.transact(TRANSACT_PING, data, reply, 0);
-            reply.readException();
-            reply.readInt(); // agentUid
-            reply.readInt(); // displayId
-            boolean watching = reply.readInt() != 0;
-            int moves = reply.readInt();
-            String note = reply.readString();
-            String watched = reply.readString();
-            lastWatch = new WatchState(watching, moves, note, watched);
+        String pkg = watchedPackage;
+        if (pkg == null) {
+            lastWatch = new WatchState(false, watchMoves, watchNote, "");
             return lastWatch;
-        } catch (Throwable t) {
-            Log.w(TAG, "心跳失败，等待代理重新广播", t);
-            binder = null;
-            return null;
-        } finally {
-            data.recycle();
-            reply.recycle();
         }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now > watchDeadline || now - watchStartedAt > WATCH_MAX_TOTAL_MS) {
+            // 窗口结束：交还控制权。这一步不能省——它才是"用户能拿回前台"的保证。
+            Log.i(TAG, "看门窗口结束，松开 " + pkg + "（共搬回 " + watchMoves + " 次）");
+            watchedPackage = null;
+            watchedDisplay = -1;
+            watchNote = "看门已松开";
+            lastWatch = new WatchState(false, watchMoves, watchNote, "");
+            return lastWatch;
+        }
+        int cur = shell.taskDisplay(pkg);
+        if (cur >= 0 && cur != watchedDisplay) {
+            boolean ok = shell.moveToDisplay(pkg, watchedDisplay);
+            if (ok) {
+                watchMoves++;
+                // 还在乱跳 → 顺延，但绝不越过硬上限
+                watchDeadline = Math.min(now + WATCH_EXTEND_MS,
+                        watchStartedAt + WATCH_MAX_TOTAL_MS);
+                watchNote = "已搬回 " + watchMoves + " 次";
+                Log.i(TAG, "看门：把 " + pkg + " 从 display " + cur
+                        + " 搬回 display " + watchedDisplay + "（第 " + watchMoves + " 次）");
+            } else {
+                watchNote = "搬回失败";
+                Log.w(TAG, "看门：搬回 " + pkg + " 失败");
+            }
+        }
+        lastWatch = new WatchState(true, watchMoves, watchNote, pkg);
+        return lastWatch;
+    }
+
+    /** 记住当前目标屏。旧实现用它给代理设默认 display；现在每条命令自带 display。 */
+    public void setDisplay(int displayId) {
+        this.currentDisplay = displayId;
     }
 
     /**
-     * 让代理看住这个包：它一旦被搬到别的屏（应用自己发起的启动不带 display，
-     * 就会把整条 root task 挪回主屏），代理立刻搬回 displayId。
+     * 开始看门：该包一旦离开 displayId 就搬回，**但有时间上限**。
      *
-     * 看门的生命周期由本端掌握，而且**只在投放这一小段里**有效：代理侧还有
-     * "目标稳定若干秒自动松开"的兜底，界面这里则在 onPause / onDestroy 就撤销。
-     * 留着看门不放，用户在主屏点该应用图标时会被反复拽回目标屏，表现为"回不到前台"。
-     *
-     * 同步调用：必须确保在这条事务之后才去 am start，否则可能先启动、后看门，
-     * 那一次搬屏就没人接。
+     * <p>重新 watch 另一个包会立即松开前一个（这是"投屏导航"等切换操作的正常路径）。
      */
-    public void watch(String packageName, int displayId) {
-        if (packageName == null) {
-            return;
+    public void watch(String packageName, int displayId, boolean persistent) {
+        long now = android.os.SystemClock.uptimeMillis();
+        // 换了投屏对象就必须丢掉上一个包的输入屏缓存，否则触摸会打到旧应用上。
+        if (!packageName.equals(watchedPackage)) {
+            shell.forgetInputDisplay();
         }
-        IBinder target = binder;
-        if (target == null) {
-            return;
-        }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeString(packageName);
-            data.writeInt(displayId);
-            target.transact(TRANSACT_WATCH, data, reply, 0);
-            reply.readException();
-        } catch (Throwable t) {
-            Log.w(TAG, "开始看门失败", t);
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
+        this.watchedPackage = packageName;
+        this.watchedDisplay = displayId;
+        this.watchMoves = 0;
+        this.watchNote = "";
+        this.watchStartedAt = now;
+        this.watchDeadline = now + WATCH_WINDOW_MS;
+        Log.i(TAG, "开始看门：" + packageName + " 必须留在 display " + displayId
+                + "（窗口 " + (WATCH_WINDOW_MS / 1000) + "s）");
     }
 
-    /**
-     * 撤销看门。同步调用：界面即将销毁时 oneway 可能来不及送达，看门会留在代理侧
-     * 继续把应用钉在目标屏上（与 STOP_MIRROR 同理）。
-     */
     public void unwatch() {
-        IBinder target = binder;
-        if (target == null) {
-            return;
+        if (watchedPackage != null) {
+            Log.i(TAG, "停止看门：" + watchedPackage);
         }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            target.transact(TRANSACT_UNWATCH, data, reply, 0);
-            reply.readException();
-        } catch (Throwable t) {
-            Log.w(TAG, "停止看门失败", t);
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
+        this.watchedPackage = null;
+        this.watchedDisplay = -1;
     }
 
-    /**
-     * 目标包的 root task 现在在哪块屏。
-     *
-     * 存在的理由：`am start-activity --display N` 之后整条 root task 会先跳到主屏，
-     * 由看门再搬回仪表屏，中间有一个几百毫秒到一两秒的窗口。调用方要判断"它到底在
-     * 哪块屏上"，必须用这个真实屏位，不能用"刚发过启动命令"来推断。
-     *
-     * 同步调用，必须在后台线程用。
-     *
-     * @return 屏号；-1 表示没有该任务；-2 表示代理缺少原语或未连接
-     */
+    // ---- 任务 --------------------------------------------------------------
+
     public int taskDisplay(String packageName) {
-        IBinder target = binder;
-        if (target == null || packageName == null) {
-            return -2;
-        }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeString(packageName);
-            target.transact(TRANSACT_TASK_DISPLAY, data, reply, 0);
-            reply.readException();
-            return reply.readInt();
-        } catch (Throwable t) {
-            Log.w(TAG, "查询任务屏位失败", t);
-            return -2;
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
+        return shell.taskDisplay(packageName);
     }
 
-    /**
-     * 把该包的 root task 搬到目标屏（不是新启动一个）。
-     *
-     * 存在的理由：`am start-activity --display N` 在目标屏上没有该包的任务时会**新建**
-     * 一条 root task，于是同一个应用在两块屏上各跑一份，各有各的页面和动画。
-     * 已经存在任务时把它搬过去才对。代理侧会把该包的**所有**任务都搬过去。
-     *
-     * 同步调用，必须在后台线程用。
-     *
-     * @return {第一个任务原来的屏位（-1 没有任务、-2 原语缺失或未连接）, 本端请求搬动的任务数}
-     */
     public int[] moveToDisplay(String packageName, int displayId) {
-        IBinder target = binder;
-        if (target == null || packageName == null) {
-            return new int[]{-2, 0};
+        int from = shell.taskDisplay(packageName);
+        if (from < 0) {
+            return new int[]{-1, 0};
         }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeString(packageName);
-            data.writeInt(displayId);
-            target.transact(TRANSACT_MOVE_TO_DISPLAY, data, reply, 0);
-            reply.readException();
-            return new int[]{reply.readInt(), reply.readInt()};
-        } catch (Throwable t) {
-            Log.w(TAG, "请求搬屏失败", t);
-            return new int[]{-2, 0};
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
+        boolean ok = shell.moveToDisplay(packageName, displayId);
+        return new int[]{from, ok ? 1 : 0};
     }
 
+    // ---- 投屏 --------------------------------------------------------------
+
     /**
-     * 让代理（uid 2000）用 am start-activity 把目标应用送上网守 display。
-     * 普通应用自己 startActivity + setLaunchDisplayId 会被 AMS 以
-     * "Permission Denial: ... with launchDisplayId=N" 拒绝，除非目标应用本身支持多屏。
+     * 把目标应用送上网守 display。
+     *
+     * <p>注意：这条命令**只负责启动**。有些应用（实测 B 站）的 exported 入口是闪屏，
+     * 它自己再拉主界面时那一次启动不带 display，AMS 会把整条 root task 挪回默认屏；
+     * 兜底靠看门（{@link #watch} + {@link #ping()}）。
+     *
+     * <p>另一条真实约束：只有 **exported** 的 Activity 能被 uid 2000 启动。
+     * 传错会拿到 {@code SecurityException: not exported from uid}，所以这里把原始输出
+     * 原样交给调用方，不假装成功。
      */
     public void launch(final int displayId, final String packageName, final String activityName,
-            final LaunchCallback callback) {
+                       final LaunchCallback callback) {
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
-                IBinder target = binder;
-                if (target == null) {
-                    callback.onResult(false, "注入代理未连接");
+                if (!shell.isReady()) {
+                    callback.onResult(false, "shell 通道未就绪");
                     return;
                 }
-                Parcel data = Parcel.obtain();
-                Parcel reply = Parcel.obtain();
-                boolean success = false;
-                String message;
-                try {
-                    data.writeInterfaceToken(DESCRIPTOR);
-                    data.writeInt(displayId);
-                    data.writeString(packageName);
-                    data.writeString(activityName);
-                    target.transact(TRANSACT_LAUNCH, data, reply, 0);
-                    reply.readException();
-                    int exitCode = reply.readInt();
-                    String output = reply.readString();
-                    success = exitCode == 0;
-                    message = output == null ? "" : output.trim();
-                    if (!success) {
-                        Log.w(TAG, "代理启动失败，am 退出码 " + exitCode + "：" + message);
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "调用代理启动失败", t);
-                    message = String.valueOf(t);
-                } finally {
-                    data.recycle();
-                    reply.recycle();
+                String out = shell.launchOn(displayId, packageName, activityName);
+                if (out == null) {
+                    callback.onResult(false, "启动命令执行失败（连接已丢弃，将自动重连）");
+                    return;
                 }
-                callback.onResult(success, message);
+                String text = out.trim();
+                boolean denied = text.contains("SecurityException")
+                        || text.contains("Permission Denial");
+                boolean error = text.contains("Error:") || text.contains("Exception");
+                if (denied) {
+                    Log.w(TAG, "启动被拒（Activity 未 exported）：" + text);
+                    callback.onResult(false, "该 Activity 不允许外部启动：" + firstLine(text));
+                    return;
+                }
+                if (error) {
+                    Log.w(TAG, "启动失败：" + text);
+                    callback.onResult(false, firstLine(text));
+                    return;
+                }
+                callback.onResult(true, firstLine(text));
             }
-        }, "agent-launch");
+        }, "dashcast-launch");
         worker.setDaemon(true);
         worker.start();
     }
 
-    public void setDisplay(int displayId) {
-        Parcel data = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeInt(displayId);
-            transact(TRANSACT_SET_DISPLAY, data);
-        } finally {
-            data.recycle();
+    private static String firstLine(String text) {
+        if (text == null) {
+            return "";
         }
+        int nl = text.indexOf('\n');
+        return nl < 0 ? text : text.substring(0, nl);
     }
 
-    public void touch(int action, float x, float y, long downTime, long eventTime) {
-        Parcel data = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeInt(action);
-            data.writeFloat(x);
-            data.writeFloat(y);
-            data.writeLong(downTime);
-            data.writeLong(eventTime);
-            transact(TRANSACT_TOUCH, data);
-        } finally {
-            data.recycle();
-        }
-    }
+    // ---- 输入 --------------------------------------------------------------
 
-    public void key(int keyCode) {        Parcel data = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            data.writeInt(keyCode);
-            transact(TRANSACT_KEY, data);
-        } finally {
-            data.recycle();
+    /**
+     * 抓一帧画面（PNG 字节），失败返回 null。
+     *
+     * <p>抓的是 {@link #inputDisplay()} —— 也就是**镜像屏**而不是投屏屏。
+     * 投屏屏（共享 3/4）是黑的中转屏，抓它只会得到全黑帧，判页必然失败。
+     */
+    public byte[] captureFrame() {
+        int display = inputDisplay();
+        if (display < 0) {
+            Log.w(TAG, "抓帧被丢弃：还没设定目标 display");
+            return null;
         }
+        return shell.screencap(display);
     }
 
     /**
-     * 向代理要应用清单。代理是 uid 2000，不受包可见性过滤，能拿到全部可启动应用；
-     * App 自己查只能拿到其中一小撮。
+     * 触摸该发到哪个 display。
+     *
+     * <p>**投屏目标屏不是输入屏**：共享屏（display 3/4）只是个中转，容器服务
+     * {@code AutoSharedDisplay} 把它镜像回主虚拟屏（display 2）时，**输入窗口也一并
+     * 注册到了 display 2**。往投屏屏注入会被 InputDispatcher 直接丢掉：
+     * {@code "no touched foreground window in display 3"}。
+     *
+     * <p>所以这里让 shell 从 {@code dumpsys input} 里读出窗口真实挂在哪个 display，
+     * 而不是拿投屏屏硬发。没在看门（没有已知包）时无法按包解析，就兜底到主投影屏
+     * —— 也就是仪表盘本身。
+     */
+    private int inputDisplay() {
+        String pkg = watchedPackage;
+        if (pkg != null) {
+            // 兜底传 -1 而不是 currentDisplay：这里必须区分"真解析出来了"与"没解析出来"，
+            // 解析不出来时绝不能顺手发到投屏槽位（那块屏上根本没有输入窗口）。
+            int resolved = shell.inputDisplayFor(pkg, -1);
+            if (resolved >= 0) {
+                return resolved;
+            }
+        }
+        // **绝不回退到投屏槽位**：槽位是黑的，往它注入会被 InputDispatcher 丢掉，
+        // 抓它只会得到全黑帧 —— 那正是"主屏上看不到仪表盘画面"的成因。
+        return projectionDisplay;
+    }
+
+    public void tap(float x, float y) {
+        int display = inputDisplay();
+        if (display < 0) {
+            Log.w(TAG, "tap 被丢弃：还没设定目标 display");
+            return;
+        }
+        shell.tap(display, x, y);
+    }
+
+    /**
+     * 触摸。action 是 MotionEvent 的动作常量（0=DOWN, 1=UP, 2=MOVE…）。
+     * 目标屏 touch=NONE，所有输入都得注入。
+     */
+    public void touch(int action, float x, float y, long downTime, long eventTime) {
+        int display = inputDisplay();
+        if (display < 0) {
+            Log.w(TAG, "touch 被丢弃：还没设定目标 display");
+            return;
+        }
+        String name;
+        switch (action) {
+            case 0:
+                name = "DOWN";
+                break;
+            case 1:
+                name = "UP";
+                break;
+            case 2:
+                name = "MOVE";
+                break;
+            case 3:
+                name = "CANCEL";
+                break;
+            default:
+                name = "MOVE";
+                break;
+        }
+        shell.touch(display, name, x, y);
+    }
+
+    public void key(int keyCode) {
+        shell.key(keyCode);
+    }
+
+    // ---- 应用清单 ----------------------------------------------------------
+
+    /**
+     * 枚举可投屏应用。
+     *
+     * <p>清单必须在 uid 2000 里查（Android 11+ 包可见性按 uid 过滤，App 侧只有 24 个，
+     * 实测 uid 2000 能拿到 126 条）。但 **label 拿不到** —— {@code dumpsys package}
+     * 不含 label 文本，解析 resources.arsc 又要 aapt；所以这里用本进程的
+     * {@code PackageManager} 尽力补，补不到就显示包名（这是已知的体验降级）。
      */
     public void listApps(final AppsCallback callback) {
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
-                IBinder target = binder;
-                if (target == null) {
-                    callback.onApps(new ArrayList<AppRepo.Entry>());
-                    return;
+                List<AppEntry> raw = shell.apps();
+                PackageManager pm = context.getPackageManager();
+                List<AppRepo.Entry> out = new ArrayList<AppRepo.Entry>(raw.size());
+                for (AppEntry e : raw) {
+                    out.add(new AppRepo.Entry(labelOf(pm, e.packageName),
+                            e.packageName, e.activityName));
                 }
-                Parcel data = Parcel.obtain();
-                Parcel reply = Parcel.obtain();
-                List<AppRepo.Entry> result = new ArrayList<AppRepo.Entry>();
-                try {
-                    data.writeInterfaceToken(DESCRIPTOR);
-                    target.transact(TRANSACT_LIST_APPS, data, reply, 0);
-                    reply.readException();
-                    ArrayList<String> flat = reply.createStringArrayList();
-                    if (flat != null) {
-                        for (int i = 0; i + 2 < flat.size(); i += 3) {
-                            result.add(new AppRepo.Entry(flat.get(i), flat.get(i + 1), flat.get(i + 2)));
-                        }
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "向代理索取应用清单失败", t);
-                } finally {
-                    data.recycle();
-                    reply.recycle();
-                }
-                Log.i(TAG, "代理下发可投屏应用 " + result.size() + " 个");
-                callback.onApps(result);
+                Log.i(TAG, "代理下发可投屏应用 " + out.size() + " 个（shell 通道）");
+                callback.onApps(out);
             }
-        }, "agent-list-apps");
+        }, "dashcast-apps");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    /** 尽力取应用名；受包可见性限制时退回包名。 */
+    private static String labelOf(PackageManager pm, String packageName) {
+        try {
+            ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
+            CharSequence label = pm.getApplicationLabel(info);
+            if (label != null && label.length() > 0) {
+                return label.toString();
+            }
+        } catch (Throwable ignored) {
+            // 包不可见：Android 11+ 的正常结果，不是错误
+        }
+        return packageName;
+    }
+
+    // ---- 界面预览 ----------------------------------------------------------
+
+    /**
+     * 预览代次：每次 start/stop 都自增，预览线程只认自己那一代。
+     *
+     * <p>必须用代次而不是一个布尔量：{@code startPreview} 会先 {@code stopPreview}，
+     * 若两者只是翻转同一个布尔量，**上一代线程会读到刚被置回的新值继续跑**，
+     * 结果是新旧两组线程同时抓帧、画面互相追赶。代次让旧线程必然看到"我不是当前代"。
+     */
+    private final java.util.concurrent.atomic.AtomicLong previewGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * **降级**预览：周期抓帧，把仪表盘画面送到界面。
+     *
+     * <p>正路是 {@link PrivilegedClient} + {@code SurfaceControl} 的 GPU 直通（原版
+     * Just Dashboard 的做法），画面由 SurfaceFlinger 直接合成进界面，满帧且几乎不耗 CPU
+     * （实测 1.5%）。抓帧只在直通不可用时启用：本车实测 3.2~3.5 fps、CPU 29%。
+     *
+     * <p>为什么还要留这条路：直通依赖"跨进程把 Surface 交给 uid 2000 进程"，
+     * 任何一环被系统拒绝就只剩黑屏；抓帧只依赖 shell 通道，独立得多。
+     * {@code screencap} 是**只读**操作，不改变设备任何状态。
+     *
+     * <p>为什么要**多条通道**：抓一帧的耗时几乎全在设备端 PNG 编码，实测单条串行是
+     * 422 ms/帧（2.4 fps），而这一步在多核上可以并行 —— 3 条并发 177 ms/帧（5.6 fps）、
+     * 6 条 131 ms/帧（7.6 fps）。所以这里起一组线程各自全速抓帧，谁先抓到谁就送界面，
+     * **不做节拍控制**：限流交给界面的"忙则丢帧"，那里才是真正决定上屏速率的地方。
+     *
+     * <p>抓的屏取自 {@link #inputDisplay()}，**与触控注入的屏完全一致**。这一条必须
+     * 守住：否则会出现"预览显示 A 屏、点击落在 B 屏"，那比没有预览更糟。
+     */
+    public void startPreview(final FrameCallback callback) {
+        stopPreview();
+        final long generation = previewGeneration.incrementAndGet();
+        for (int i = 0; i < ShellChannel.PREVIEW_CHANNELS; i++) {
+            final int channel = i;
+            new Thread("dashcast-preview-" + channel) {
+                @Override
+                public void run() {
+                    previewLoop(callback, generation, channel);
+                }
+            }.start();
+        }
     }
 
     /**
-     * 把仪表盘画面镜像到本端这个 Surface 上。
+     * 停止预览，并把预览连接全部还回去。
      *
-     * Surface 走 Parcel 直接传给代理（Surface 是 Parcelable，writeToParcel 把
-     * IGraphicBufferProducer 作为强 binder 送过去），这与原版把 App 的 TextureView
-     * Surface 交给 uid-2000 傀儡是同一个做法。
+     * <p>**不 join，也不 interrupt**：单次抓帧最长 4s（{@code SCREENCAP_TIMEOUT_MS}），
+     * 等它会卡住调用方（通常是 UI 线程的 onPause）；而 interrupt 对阻塞在 socket 读上的
+     * 线程本来也无效。真正的推进力是 {@link ShellChannel#closePreview()}：socket 一关，
+     * 正在读帧的通道立刻抛错返回，代次自增让它们在下一轮检查时退出。
+     *
+     * <p>关连接是"后台不留资源"的关键一步：只停线程的话，界面已经不可见了，
+     * 却还占着 {@code PREVIEW_CHANNELS} 个 adbd 会话。
      */
-    public void startMirror(final Surface surface, final MirrorCallback callback) {
-        Thread worker = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                IBinder target = binder;
-                if (target == null) {
-                    callback.onResult(false, "注入代理未连接");
-                    return;
-                }
-                Parcel data = Parcel.obtain();
-                Parcel reply = Parcel.obtain();
-                try {
-                    data.writeInterfaceToken(DESCRIPTOR);
-                    data.writeParcelable(surface, 0);
-                    target.transact(TRANSACT_START_MIRROR, data, reply, 0);
-                    reply.readException();
-                    String error = reply.readString();
-                    callback.onResult(error == null, error);
-                } catch (Throwable t) {
-                    Log.w(TAG, "请求镜像失败", t);
-                    callback.onResult(false, String.valueOf(t));
-                } finally {
-                    data.recycle();
-                    reply.recycle();
-                }
+    public void stopPreview() {
+        previewGeneration.incrementAndGet();
+        shell.closePreview();
+    }
+
+    /**
+     * 一条预览通道的抓帧循环：**全速跑到被停**，不 sleep。
+     *
+     * <p>{@code channel} 决定用连接组里的哪一条；每条连接在 adbd 侧是独立会话，
+     * 所以它们是真的并行，而不是共享一把锁排队。
+     */
+    private void previewLoop(FrameCallback callback, long generation, int channel) {
+        try {
+            if (!shell.ensurePreview(context, channel)) {
+                // 一条通道连不上不报错：其余通道可能正常，帧率低一点好过没有画面。
+                Log.w(TAG, "预览通道 " + channel + " 未建立");
+                return;
             }
-        }, "agent-mirror");
-        worker.setDaemon(true);
-        worker.start();
-    }
-
-    public void stopMirror() {
-        IBinder target = binder;
-        if (target == null) {
-            return;
-        }
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken(DESCRIPTOR);
-            // 必须同步：oneway 在进程即将退出时可能来不及送达，镜像显示就会留在
-            // SurfaceFlinger 里一直泄漏到重启。
-            target.transact(TRANSACT_STOP_MIRROR, data, reply, 0);
-            reply.readException();
         } catch (Throwable t) {
-            Log.w(TAG, "请求停止镜像失败", t);
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
-
-    private void transact(int code, Parcel data) {
-        IBinder target = binder;
-        if (target == null) {
+            Log.w(TAG, "预览通道 " + channel + " 建立失败", t);
             return;
         }
-        try {
-            target.transact(code, data, null, IBinder.FLAG_ONEWAY);
-        } catch (RemoteException e) {
-            Log.w(TAG, "代理已失联，等待重新广播", e);
-            binder = null;
+        boolean reported = false;
+        while (previewGeneration.get() == generation) {
+            int display = inputDisplay();
+            if (display < 0) {
+                callback.onFailed("还没定位到仪表盘，先投屏再看预览");
+                return;
+            }
+            byte[] png = shell.screencapPreview(channel, display);
+            if (png == null) {
+                if (!reported) {
+                    reported = true;
+                    callback.onFailed("抓不到仪表盘画面");
+                }
+            } else {
+                reported = false;
+                callback.onFrame(png);
+            }
         }
     }
 }

@@ -13,7 +13,6 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
-import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.interfaces.RSAPublicKey;
 
@@ -24,33 +23,27 @@ import javax.crypto.Cipher;
  *
  * 为什么需要它：这台车机上
  *   - `setLaunchDisplayId(2)` 从普通应用发起会被 AMS 拒绝
- *     （报错为 SecurityException: Permission Denial ... with launchDisplayId=2），
+ *     （实测 SecurityException: Permission Denial ... with launchDisplayId=2），
  *   - 输入注入需要 INJECT_EVENTS，是 signature|privileged。
- * 两者都只有 uid 2000(shell) 能做。而 adbd 就监听在车机本地 127.0.0.1:5555，
+ * 两者都只有 uid 2000(shell) 能做。而 adbd 就监听在本机 127.0.0.1:5555，
  * 通过 AUTH 之后即可开 shell: 服务，以 shell 身份执行命令。
  *
  * 原始 APK 用的正是同一条路（com/byd/windowmanager/test/adb/AdbClient，连 127.0.0.1
- * 的 0x15b3=5555，开 "shell:"），区别只是它把作者自己的私钥内嵌了进去；本程序改为
- * 首次运行时自行生成密钥并走一次系统授权，见 {@link AdbKeyStore}。
+ * 的 0x15b3=5555，开 "shell:"），区别只是它把作者自己的私钥内嵌了进去；我们改为
+ * 首次运行时本机自生成密钥并走一次系统授权，见 {@link AdbKeyStore}。
  *
- * 已验证：
+ * 已在本机实测通过（探针 com.byd.dashcast.probe，uid 10100）：
  *   TCP 连接成功 -> AUTH 通过 -> CNXN -> shell:id -> uid=2000(shell) context=u:r:shell:s0
  *
  * 协议要点（24 字节小端消息头：command, arg0, arg1, data_length, crc32, magic）：
  *   CNXN  data = "host::\0"
  *   AUTH  arg0=1 带 20 字节 token -> 以 arg0=2 回 256 字节签名
- *         arg0=3 表示服务端不认识本程序的公钥，需以 arg0=3 回送公钥；
+ *         arg0=3 表示服务端不认识我们的公钥，需以 arg0=3 回送公钥；
  *         车机会弹「允许 USB 调试吗」，用户点允许后 adbd 会再发一个 token。
  *   OPEN  arg0=本地 id，data = 完整服务名 + "\0"（如 "shell:id"，**不是**裸命令）
  *   WRTE/OKAY/CLSE  数据、应答、结束
  *
- * shell 流走 v2（服务名 `shell,v2,raw:`），每一条 WRTE 的正文是若干"帧"，每帧定长头 5 字节：
- *
- *   [id:1][length:4 小端][payload:length]
- *
- * id 取值见 AOSP system/core/adb/shell_protocol.h 的 ShellProtocol::Id：
- * 0=stdin、1=stdout、2=stderr、3=exit（payload 是 1 字节退出码）、4=close-stdin、5=window-size。
- * 正文只在 id=1/2 时才是输出，且必须按 length 截取——头里那 4 字节不是正文。
+ * 未实现 shell_v2：我们不在 CNXN 里声明 shell_v2 feature，adbd 会退回 v1（原始字节流）。
  */
 public final class AdbClient implements Closeable {
 
@@ -64,7 +57,18 @@ public final class AdbClient implements Closeable {
     private static final int A_WRTE = 0x45545257; // "WRTE"
 
     private static final int A_VERSION = 0x01000001;
-    private static final int MAX_PAYLOAD = 4096;
+    /**
+     * {@code A_CNXN} 里声明的 maxdata，即"adbd 一次最多发给我多少字节"。
+     *
+     * <p>**这是 170 KB 级抓帧流的吞吐命门。** 声明 4096 时 adbd 每包只发 4 KB，
+     * 一帧 PNG 要拆成 42 个 {@code A_WRTE}，而 ADB 协议**每个包都要回一次 {@code A_OKAY}**
+     * —— 帧时间被 42 次往返吃掉。实测症状很典型：App 进程 CPU 只有 4.4%（8 核机器），
+     * 帧率却卡在 3 fps，也就是"根本没在算，全在等"。
+     *
+     * <p>标准 adb 客户端声明的是 1 MB（AOSP {@code MAX_PAYLOAD}），这里对齐。
+     * adbd 取两者较小值，所以声明大了不会被拒。
+     */
+    private static final int MAX_PAYLOAD = 1024 * 1024;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     /** SHA-1 的 PKCS#1 DigestInfo 前缀（RFC 8017），后面接 20 字节摘要。 */
@@ -80,7 +84,7 @@ public final class AdbClient implements Closeable {
     public enum State {
         /** 认证通过，可以执行 shell。 */
         READY,
-        /** adbd 在线，但不认识本程序的公钥（AUTH arg0=3）——需要用户在车机上点「允许」。 */
+        /** adbd 在线，但不认识我们的公钥（AUTH arg0=3）——需要用户在车机上点「允许」。 */
         NEED_AUTHORIZATION,
         /** 连不上 127.0.0.1:PORT（adbd 没在 TCP 上监听，或网络异常）。 */
         UNREACHABLE,
@@ -118,7 +122,7 @@ public final class AdbClient implements Closeable {
     /**
      * 连接并进行 AUTH。
      *
-     * requestAuthorization 决定本程序**允不允许触发车机的授权对话框**：
+     * requestAuthorization 决定我们**允不允许触发车机的授权对话框**：
      *   false —— 只签名。签名被拒就报 NEED_AUTHORIZATION 并收手，绝不发送公钥。
      *   true  —— 签名被拒时发送公钥，让车机弹「允许 USB 调试吗」。
      *
@@ -171,7 +175,7 @@ public final class AdbClient implements Closeable {
                         }
                         writeMsg(out, A_AUTH, 2, 0, signToken(key, m.data));
                     } else if (tokens >= 4 && !publicKeySent) {
-                        // adbd 不认识本程序的签名时会一直重发 token。真实 adb 客户端的做法是
+                        // adbd 不认识我们的签名时会一直重发 token。真实 adb 客户端的做法是
                         // 在这时**主动**把公钥送过去；adbd 收到 AUTH(arg0=3) 才会在车机上
                         // 弹出「允许 USB 调试吗」。只发一次，重复发会让弹框反复出现。
                         publicKeySent = true;
@@ -240,29 +244,21 @@ public final class AdbClient implements Closeable {
     // ---- shell -------------------------------------------------------------
 
     /**
-     * shell v2 的帧头长度：1 字节 id + 4 字节小端 payload 长度。
+     * shell 协议 v2 的包头：{@code [Id:1][length:4 小端]}，其后才是数据。
      *
-     * 这个 5 不是猜的：`echo ONE` 时 adbd 发来的一整条 WRTE 正文是
-     *   01 04 00 00 00 4F 4E 45 0A 03 01 00 00 00 00
-     * 拆开正好是两帧：id=1(stdout) len=4 "ONE\n"，id=3(exit) len=1 退出码 00。
-     * 用固定长度输出再标定了一次长度字段的宽度：
-     *   正文 9 字节  -> 09 00 00 00 + 9 字节      正文 21 字节 -> 15 00 00 00 + 21 字节
-     *   正文 4093 字节 -> FD 0F 00 00 + 4093 字节（0x0FFD，4 字节小端，不是 1 字节）
+     * <p>定义见 AOSP {@code shell_service_protocol.cpp}：
+     * <pre>
+     * bool ShellProtocol::Write(Id id, size_t length) {
+     *     buffer_[0] = id;
+     *     length_t typed_length = length;
+     *     memcpy(&amp;buffer_[1], &amp;typed_length, sizeof(typed_length));
+     * </pre>
      */
-    private static final int SHELL_HEADER_BYTES = 5;
+    private static final int SHELL_V2_HEADER = 5;
 
-    /** 帧 id：只有这两个是命令的输出。 */
+    /** 包头的 {@code Id}：命令的 stdout / stderr。其余（退出码、关 stdin、窗口变化）不是正文。 */
     private static final int SHELL_STDOUT = 1;
     private static final int SHELL_STDERR = 2;
-
-    /** 帧 id=3：命令已退出，payload 是退出码。收到它就说明这条流逻辑上结束了。 */
-    private static final int SHELL_EXIT = 3;
-
-    /**
-     * 协议里定义的 id 上限（5=window-size-change）。超出它只有一个解释：
-     * 分帧位置偏了，读到的是正文。与其猜，不如报错。
-     */
-    private static final int SHELL_ID_MAX = 5;
 
     /**
      * 打开一条 shell 流用的服务名前缀。
@@ -270,7 +266,7 @@ public final class AdbClient implements Closeable {
      * 必须是 `shell,v2,raw:`，不能用旧的 `shell:`：
      *
      *   - 旧服务名让 adbd 给命令挂一个 **pty**，命令于是变成"某个会话里的作业"，
-     *     会话一回收就被连带清掉。`app_process … &` 在这种通道下只会在日志里
+     *     会话一回收就被连带清掉。实测 `app_process … &` 在这种通道下只会在日志里
      *     留下一行重定向凭据，进程本身从不出现；而同一条命令走 PC 上的 `adb shell`
      *     （即 `shell,v2,raw:`）一次就成了。差别只在通道，不在命令。
      *   - `raw` 让 adbd 不分配 pty，子进程自成会话，后台任务才真正脱离 adb 会话。
@@ -280,292 +276,169 @@ public final class AdbClient implements Closeable {
      */
     private static final String SHELL_SERVICE = "shell,v2,raw:";
 
-    /** 远端写入落盘的等待上限与轮询间隔（见 {@link #awaitRemoteSize}）。 */
-    private static final long SETTLE_TIMEOUT_MS = 5000L;
-    private static final long SETTLE_POLL_MS = 50L;
-
-    private static byte[] shellServiceName(String command) {
-        return (SHELL_SERVICE + command + "\0").getBytes(UTF8);
-    }
-
     /**
-     * shell 流的**流式**分帧器。存在两个必须跨报文保持状态的理由：
-     *
-     *   1. 一条 WRTE 里可以塞好几帧——40 字节输出是
-     *      `01 09 00 00 00 A×9  01 15 00 00 00 A×21  01 03 00 00 00 A×3 …`
-     *      一个 ADB 报文里连着好多个"头+正文"。只看第一帧会丢正文。
-     *   2. 一帧也可以横跨两条 WRTE——40000 字节输出出现过
-     *      `WRTE data=4096 … [id=1 len=3806] 只剩 3701 字节` 紧接
-     *      `WRTE data=105`（正好是缺的 105 字节，且开头是正文不是帧头）。
-     *      按报文各自对齐会在第二包上把正文当帧头读，从此彻底跑飞。
-     *
-     * 所以 id / 长度 / 正文余量都必须挂在对象上，不能是每报文一算的局部量。
+     * {@code exec:} 服务：不经过 shell/pty，stdout 二进制透明。
+     * 这正是 {@code adb exec-out} 走的路，也是这台设备上唯一能完整取回二进制的通道
+     * （{@code shell,v2,raw:} 实测会在中途断掉，PNG 只回来 6 字节）。
+     * 代价是**不能用管道、重定向等 shell 语法**，只能是一条命令。
      */
-    private static final class ShellFrames {
-
-        private final byte[] header = new byte[SHELL_HEADER_BYTES];
-        private int headerBytes;
-        private int id = -1;
-        private int remaining;
-
-        /**
-         * 吃进一条 WRTE 的正文，把 stdout/stderr 追加到 body。
-         *
-         * @return true 表示已经收到 exit 帧，这条流读完了
-         */
-        boolean feed(byte[] data, int length, ByteArrayOutputStream body) throws IOException {
-            int off = 0;
-            while (off < length) {
-                if (remaining > 0) {
-                    int n = Math.min(remaining, length - off);
-                    if (id == SHELL_STDOUT || id == SHELL_STDERR) {
-                        body.write(data, off, n);
-                    }
-                    off += n;
-                    remaining -= n;
-                    if (remaining == 0 && id == SHELL_EXIT) {
-                        return true;
-                    }
-                    continue;
-                }
-                int need = SHELL_HEADER_BYTES - headerBytes;
-                int n = Math.min(need, length - off);
-                System.arraycopy(data, off, header, headerBytes, n);
-                headerBytes += n;
-                off += n;
-                if (headerBytes < SHELL_HEADER_BYTES) {
-                    // 帧头本身也横跨了报文边界，等下一包补齐。
-                    return false;
-                }
-                headerBytes = 0;
-                id = header[0] & 0xFF;
-                if (id > SHELL_ID_MAX) {
-                    // 帧头位置读到的是正文，说明分帧已经跑飞。宁可报错也不能假装成功。
-                    throw new IOException("shell 帧 id 非法：" + id);
-                }
-                remaining = (int) readUInt32LE(header, 1);
-                if (remaining == 0 && id == SHELL_EXIT) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    }
+    private static final String EXEC_SERVICE = "exec:";
 
     /** 执行一条命令并返回其 stdout/stderr 合并输出。超时返回已收到的部分。 */
     public String shell(String command, long timeoutMs) throws IOException {
+        return new String(openStream(SHELL_SERVICE, command, timeoutMs, true), UTF8);
+    }
+
+    /**
+     * 走 {@code exec:} 服务取回**二进制**输出（相当于 {@code adb exec-out}）。
+     *
+     * <p>这是本设备上唯一能把 PNG 完整拿回来的通道：{@code shell,v2,raw:} 实测会中途
+     * 断掉（{@code screencap -p} 只回来 6 字节），base64 绕行同样被截断。
+     * 限制是**不能带管道或重定向**，只能是单条命令。
+     */
+    public byte[] exec(String command, long timeoutMs) throws IOException {
+        return openStream(EXEC_SERVICE, command, timeoutMs, false);
+    }
+
+    /**
+     * 开一条服务流并读回全部输出。
+     *
+     * @param stripStreamId true 表示服务用 **shell 协议 v2**（{@code shell,v2,...:}），
+     *                      正文有 5 字节包头；false 表示 {@code exec:} 这类不带封装的
+     *                      （协议 v0），正文即数据。两者必须分开处理。
+     */
+    private byte[] openStream(String service, String command, long timeoutMs,
+            boolean stripStreamId) throws IOException {
         socket.setSoTimeout((int) timeoutMs);
         int localId = nextLocalId();
-        writeMsg(out, A_OPEN, localId, 0, shellServiceName(command));
+        writeMsg(out, A_OPEN, localId, 0, (service + command + "\0").getBytes(UTF8));
 
+        int remoteId = -1;
         ByteArrayOutputStream body = new ByteArrayOutputStream();
-        ShellFrames frames = new ShellFrames();
+        ShellV2Parser shell = stripStreamId ? new ShellV2Parser() : null;
         for (int guard = 0; guard < 100000; guard++) {
             Msg m;
             try {
                 m = readMsg(in);
             } catch (java.net.SocketTimeoutException e) {
+                Log.w(TAG, "openStream[" + service + "]: 读超时，已收 " + body.size() + " 字节");
                 break;
             }
-            // 同一条连接上先后开多条流：上一条流的收尾消息（CLSE，以及可能排在 CLSE
-            // 之后才到的 exit 帧）还在缓冲区里。设备发来的消息 arg1 一定是**它的对端**
-            // 也就是本端的 local id，所以不属于本条流的一律丢掉——不这么做，上一条流
-            // 的残留会被当成本条流的输出。
-            if (m.arg1 != localId) {
+            if (m.command == A_OKAY) {
+                // 流建立确认：arg0 是我们的 localId，arg1 是 adbd 给这条流分配的 id。
+                if (m.arg0 == localId) {
+                    remoteId = m.arg1;
+                }
                 continue;
             }
             if (m.command == A_WRTE) {
-                boolean done = frames.feed(m.data, m.data.length, body);
-                // OKAY 的 arg1 是**发 WRTE 那一端**的 id，也就是设备侧的 m.arg0。
-                writeMsg(out, A_OKAY, localId, m.arg0, null);
-                if (done) {
-                    break;
+                // **必须按 m.arg1 过滤**：adbd 发来的 WRTE 里 arg0 是它的 local id、
+                // arg1 才是我们的 localId。同一条 socket 上会并发多条流（心跳巡检、
+                // 判页抓帧各开一条），不过滤就会把别的流的字节混进本次结果——
+                // 实测表现是"PNG 只回来 13 字节 / 偶发 62 字节"这种怪象。
+                if (m.arg1 == localId) {
+                    if (m.data.length > 0) {
+                        if (shell != null) {
+                            shell.feed(m.data);
+                        } else {
+                            body.write(m.data, 0, m.data.length);
+                        }
+                    }
+                    // 确认时远程 id 是 m.arg0（adbd 的 local id），不是 m.arg1。
+                    remoteId = m.arg0;
+                    writeMsg(out, A_OKAY, localId, remoteId, null);
                 }
                 continue;
             }
             if (m.command == A_CLSE) {
-                break;
-            }
-            if (m.command != A_OKAY) {
-                break;
-            }
-        }
-        return new String(body.toByteArray(), UTF8);
-    }
-
-    /**
-     * 把数据写进远端文件：开 `cat > <path>`，再把字节当作 stdin 灌进去。
-     *
-     * 这样 App 不需要任何可写共享目录——/data/local/tmp 只有 shell 能写，
-     * 而这条通道本身就是 shell。
-     *
-     * 这条流故意留在 **v1（`shell:`）**，不跟 {@link #shell} 一起搬到 v2：
-     * v1 的 WRTE 正文就是 stdin 本身，上传后 md5 与本地一致。
-     * 换成 v2 并给每包加 kIdStdin 前缀后，远端 `cat` 只创建出 0 字节文件、
-     * 调用一直不返回——原因未定位，而这条路径本来就没有 pty 问题（v1 的 pty
-     * 只影响"命令把自己挂到后台"的用法），所以不做无根据的迁移。
-     * 待办：查清 v2 下 stdin 的正确灌法后统一，见 docs/ADB_SELF_PROVISION_ZH.md 第 6 节。
-     */
-    public void writeRemoteFile(String remotePath, byte[] data, long timeoutMs) throws IOException {
-        socket.setSoTimeout((int) timeoutMs);
-        int localId = nextLocalId();
-        Log.i(TAG, "writeRemoteFile " + remotePath + " " + data.length + "B localId=" + localId);
-        writeMsg(out, A_OPEN, localId, 0,
-                ("shell:cat > " + remotePath + "\0").getBytes(UTF8));
-
-        int remoteId = -1;
-        for (int i = 0; i < 16 && remoteId < 0; i++) {
-            Msg m = readMsg(in);
-            if (m.command == A_OKAY && m.arg1 == localId) {
-                remoteId = m.arg0;
-            } else if (m.command == A_CLSE && m.arg1 == localId) {
-                throw new IOException("远端拒绝打开 shell:cat > " + remotePath);
-            }
-        }
-        if (remoteId < 0) {
-            throw new IOException("等待 OKAY 超时");
-        }
-
-        int offset = 0;
-        while (offset < data.length) {
-            int chunk = Math.min(MAX_PAYLOAD, data.length - offset);
-            byte[] slice = new byte[chunk];
-            System.arraycopy(data, offset, slice, 0, chunk);
-            writeMsg(out, A_WRTE, localId, remoteId, slice);
-            offset += chunk;
-
-            // cat 会持续消费，但仍要处理夹在中间的控制消息，避免管道反压死锁。
-            while (in.available() > 0) {
-                Msg m = readMsg(in);
-                if (m.command == A_CLSE && m.arg1 == localId) {
-                    throw new IOException("远端在写入中途关闭");
-                }
-            }
-        }
-
-        // 关掉 stdin 让 cat 退出。
-        writeMsg(out, A_CLSE, localId, remoteId, null);
-        for (int i = 0; i < 60; i++) {
-            try {
-                Msg m = readMsg(in);
-                if (m.command == A_CLSE && m.arg1 == localId) {
+                // 同一条连接上会先后开多条流，CLSE 的 arg1 才是本地 id。
+                // 不比对就会把上一条流的关闭消息当成自己的，误判为"服务被拒"。
+                if (m.arg1 == localId) {
+                    Log.i(TAG, "openStream[" + service + "]: 远端关闭，已收 "
+                            + (shell != null ? shell.size() : body.size()) + " 字节");
                     break;
                 }
-                if (m.command == A_WRTE) {
-                    writeMsg(out, A_OKAY, localId, m.arg1, null);
+                continue;
+            }
+            Log.w(TAG, "openStream[" + service + "]: 收到非预期命令 0x"
+                    + Integer.toHexString(m.command) + "，已收 "
+                    + (shell != null ? shell.size() : body.size()) + " 字节");
+            break;
+        }
+        // 收尾必须回 CLSE：不回的话 adbd 认为这条流还开着，会继续往里灌残留数据，
+        // 后面的流就会一直被这些垃圾包干扰。
+        if (remoteId >= 0) {
+            try {
+                writeMsg(out, A_CLSE, localId, remoteId, null);
+            } catch (IOException e) {
+                Log.w(TAG, "openStream[" + service + "]: 发送 CLSE 失败", e);
+            }
+        }
+        return shell != null ? shell.body() : body.toByteArray();
+    }
+
+    /**
+     * shell 协议 v2 的流式解析器。
+     *
+     * <p>帧格式是 {@code [Id:1][length:4 小端][data]}（见 AOSP {@code shell_service_protocol.cpp}
+     * 的 {@code ShellProtocol::Write}）。**关键事实：一个 ADB WRTE 里可能并排多个帧。**
+     * 实测 adbd 把 {@code cmd package query-activities} 的 18428 字节输出压成了
+     * 8192+8192+2044 三帧，塞进同一条 18443 字节的 WRTE：
+     * <pre>
+     *   PROBE 包#0 bytes=18443 id=1 hdr=8192
+     *   18443 == (5+8192) + (5+8192) + (5+2044)
+     * </pre>
+     * 所以既不能"一个 WRTE 当一个帧"（会只剩第一帧），也不能只跳过 Id 那 1 字节
+     * （会把 length 当正文，每个帧给结果前头多塞 4 字节）。
+     *
+     * <p>帧还可能跨 WRTE 边界，所以尾部残片要留到下一次 {@link #feed}。
+     */
+    private static final class ShellV2Parser {
+
+        private final ByteArrayOutputStream body = new ByteArrayOutputStream();
+        /** 上一包尾部那半帧，等下一包补齐。 */
+        private byte[] pending = new byte[0];
+
+        void feed(byte[] packet) {
+            byte[] buf;
+            if (pending.length == 0) {
+                buf = packet;
+            } else {
+                buf = new byte[pending.length + packet.length];
+                System.arraycopy(pending, 0, buf, 0, pending.length);
+                System.arraycopy(packet, 0, buf, pending.length, packet.length);
+                pending = new byte[0];
+            }
+            int off = 0;
+            while (buf.length - off >= SHELL_V2_HEADER) {
+                int id = buf[off] & 0xFF;
+                int length = (buf[off + 1] & 0xFF)
+                        | ((buf[off + 2] & 0xFF) << 8)
+                        | ((buf[off + 3] & 0xFF) << 16)
+                        | ((buf[off + 4] & 0xFF) << 24);
+                if (length < 0 || buf.length - off - SHELL_V2_HEADER < length) {
+                    // 这一帧还没到齐，留给下一次 feed。
+                    break;
                 }
-            } catch (java.net.SocketTimeoutException e) {
-                break;
+                if (id == SHELL_STDOUT || id == SHELL_STDERR) {
+                    body.write(buf, off + SHELL_V2_HEADER, length);
+                }
+                // kIdExit / kIdCloseStdin / kIdWindowSizeChange：不是正文，只跳过。
+                off += SHELL_V2_HEADER + length;
+            }
+            if (off < buf.length) {
+                byte[] rest = new byte[buf.length - off];
+                System.arraycopy(buf, off, rest, 0, rest.length);
+                pending = rest;
             }
         }
 
-        // CLSE 是**双向**的：这一条只是 adbd 对客户端关闭请求的应答，不代表远端的
-        // cat 已经把缓冲区落盘。返回后立刻 `wc -c` 会读到 0，几十毫秒后才变成
-        // 完整长度——调用方若在这段窗口里回读，会误判成"上传失败"，而文件其实
-        // 是好的。所以"写完"必须由这里自己等出来，不能交给调用方去赌时序。
-        awaitRemoteSize(remotePath, data.length, SETTLE_TIMEOUT_MS);
-        // 长度对不代表内容对：远端有"长度正好、内容全是 0"的文件。长度判据会一路
-        // 放行，代理于是永远起不来。这里让页缓存落盘，再按内容核对。
-        syncRemote();
-        verifyRemoteDigest(remotePath, sha256Hex(data));
-        Log.i(TAG, "writeRemoteFile 完成 " + remotePath + " " + data.length + "B");
-    }
+        int size() {
+            return body.size();
+        }
 
-    /**
-     * 远端文件的 SHA-256（小写 hex）。
-     *
-     * 判据必须是内容。此前整条链上只有"长度"，而掉电后丢数据留下的正是"长度正确、
-     * 内容全 0"——这种文件骗过了每一道检查。
-     */
-    static String sha256Hex(byte[] data) throws IOException {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
-            StringBuilder sb = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
-                sb.append(Character.forDigit(b & 0xF, 16));
-            }
-            return sb.toString();
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IOException("缺少 SHA-256 实现", e);
-        }
-    }
-
-    /**
-     * 把设备页缓存刷到介质。`sync` 是 toybox 的原生调用。
-     *
-     * 为什么需要：写文件的不是本进程时（例如系统框架把授权写进 /data/misc/adb/adb_keys），
-     * 应用没法对它的 fd 做 fsync；但掉电前只要有人 sync 过一次，那份追加就落住了。
-     */
-    void syncRemote() {
-        try {
-            shell("/system/bin/sync", 10000L);
-        } catch (IOException e) {
-            Log.w(TAG, "sync 失败（不影响本次写入，只影响掉电后的留存）：" + e);
-        }
-    }
-
-    /** 回读远端内容摘要并与源比对；不一致即抛错，不放过。 */
-    private void verifyRemoteDigest(String remotePath, String expected) throws IOException {
-        String out = shell("sha256sum " + remotePath + " 2>/dev/null", 15000L).trim();
-        int sp = out.indexOf(' ');
-        String actual = (sp < 0 ? out : out.substring(0, sp)).trim();
-        if (!expected.equalsIgnoreCase(actual)) {
-            throw new IOException("远端文件内容与源不一致：" + remotePath
-                    + " 期望 sha256=" + expected + "，实际「" + actual + "」");
-        }
-    }
-
-    /**
-     * 等到远端文件长度稳定成期望值。
-     *
-     * 这是等待一个**异步写入落盘**的收敛条件，不是重试掩盖错误：超时即抛错，
-     * 长度不对也抛错。两者都不可吞。
-     */
-    private void awaitRemoteSize(String remotePath, long expected, long timeoutMs)
-            throws IOException {
-        long deadline = System.nanoTime() + timeoutMs * 1000000L;
-        long last = -1L;
-        while (true) {
-            last = remoteSize(remotePath);
-            if (last == expected) {
-                return;
-            }
-            if (System.nanoTime() >= deadline) {
-                throw new IOException("远端文件写入未完成：" + remotePath
-                        + " 期望 " + expected + " 字节，实际 " + last);
-            }
-            sleep(SETTLE_POLL_MS);
-        }
-    }
-
-    /** 远端文件字节数；读不到返回 -1。 */
-    private long remoteSize(String remotePath) {
-        String out;
-        try {
-            out = shell("wc -c < " + remotePath + " 2>/dev/null", 5000L).trim();
-        } catch (IOException e) {
-            return -1L;
-        }
-        if (out.isEmpty()) {
-            return -1L;
-        }
-        int nl = out.indexOf('\n');
-        if (nl >= 0) {
-            out = out.substring(0, nl);
-        }
-        try {
-            return Long.parseLong(out.trim());
-        } catch (NumberFormatException e) {
-            return -1L;
-        }
-    }
-
-    private static void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        byte[] body() {
+            return body.toByteArray();
         }
     }
 
