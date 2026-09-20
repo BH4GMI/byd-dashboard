@@ -1,12 +1,28 @@
 # BYD-dashboard · 把任意 App 投到比亚迪 DiLink 5 的仪表盘
 
-在**不 root、不刷机、不需要电脑，只要ADB权限**的前提下，让车机上的普通应用自己拿到 `uid 2000 (shell)`，
+> ## ⚠️ Caution · 未经真机验收
+>
+> **这是一份尚未完成真机端到端验收的发行版，上车前请自行评估风险。**
+>
+> - 打包这次发行版时，**测试车机不在网络上**，所以本次的源码同步、死代码清理与构建脚本改动
+>   **没有做任何真机回归**。
+> - APK 里的代码本身在**一台** DiLink 5.0 车机上验证过（直通预览、触控注入、投屏、应用列表），
+>   并且本仓库构建出的 `apk/dashcast.apk` 与车上验证过的那份**逐字节一致**（SHA-256 相同）。
+>   但"能构建出同一个文件"**不等于**"这条发行路径被验证过"。
+> - 明确**未验证**的：全新安装（非覆盖安装）、从 `1.0.0` 升级、开机自启、
+>   以及**除这一台车之外的任何车型与固件**。
+> - 请**不要在行车过程中**首次试用；涉及仪表盘显示的功能请先确认不影响原车信息的读取。
+> - 本项目按「现状」提供，不附带任何担保，详见文末[免责](#免责)。
+>
+> 如果你愿意反馈真机结果（成功或失败），对本项目都有价值。
+
+在**不 root、不刷机、不需要电脑，只要 ADB 权限**的前提下，让车机上的普通应用自己拿到 `uid 2000 (shell)`，
 再用这份权限把任意应用投到仪表盘副屏、注入触控，并把它钉在副屏上。
 
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
-> 当前版本 **v1.0.0**（首个公开版本）。
+> 当前版本 **4.1-cast-reliable**（`versionCode 113`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
 
@@ -14,13 +30,13 @@
 
 DiLink 5 的仪表盘是**车机自带的投影屏**，不需要也不应该自建：
 
-| displayId | 名字 | 尺寸 | flags |
+| displayId | 名字 | 尺寸 | 关键属性 |
 | --- | --- | --- | --- |
-| 0 | 主屏 | 1920×1080 | `FLAG_SECURE` |
-| 2 | `fission_bg_XDJAScreenProjection` | 1920×720 @320 | `FLAG_PRESENTATION`，**不带** `FLAG_OWN_CONTENT_ONLY` |
-| 3 / 4 | `shared_fission_bg_XDJAScreenProjection_0/1` | — | 共享变体 |
+| 0 | 内置屏幕 | 1920×1080 | layerStack 0，唯一的 HWC 屏 |
+| 2 | `fission_bg_XDJAScreenProjection` | 1920×720 @320 | layerStack 2，`touch NONE`，owner `com.byd.containerservice`(uid 1000) —— **这就是仪表盘** |
+| 3 / 4 | `shared_fission_bg_XDJAScreenProjection_0/1` | 1920×720 | layerStack 3/4 —— **投屏槽位**，`screencap` 出来全黑 |
 
-普通应用想把别的应用（或自己的界面）送到副屏，会被 AMS 直接拒掉：
+普通应用想把别的应用送到副屏，会被 AMS 直接拒掉：
 
 ```
 SecurityException: Permission Denial: ... with launchDisplayId=2
@@ -30,45 +46,48 @@ SecurityException: Permission Denial: ... with launchDisplayId=2
 
 ## 核心机制
 
-1. **本地 ADB 自举** — 应用用内嵌（或首次运行自生成）的密钥连车机本地回环 `127.0.0.1:5555`，
-   走标准 ADB 线协议完成握手，拿到一条 `shell,v2,raw:` 通道。
-2. **拉起代理** — 把 APK 内置的 `dashcast-agent.jar` 写到 `/data/local/tmp/`，
-   再用 `setsid app_process --nice-name=dashcast-agent` 启动。
-   必须 `setsid`：adbd 在 shell 会话结束时回收的是**整个会话**，不脱离就一定会被连带杀掉。
-   也必须用 `shell,v2,raw:`：旧的 `shell:` 会分配 pty，同样会导致会话回收时杀掉后台进程。
-3. **投屏** — 代理通过 ATMS 把目标应用投到仪表盘的 displayId。
-4. **触控注入** — 代理用 `InputManager.injectInputEvent` 把点击送进副屏。
-   注意 `TOUCH` 事务本身不带 display，代理必须先 `setDisplay()`。
-5. **看门** — 目标应用被拽回主屏时把它搬回去。
-   应用自己发起的 Activity 启动不带 display，AMS 会把整条 root task 挪回默认屏。
+1. **本地 ADB 自举** — 应用用首次运行自生成（或构建时内嵌）的密钥连车机本地回环 `127.0.0.1:5555`，
+   走标准 ADB 线协议完成握手，拿到一条 `shell,v2,raw:` 通道。全程不需要电脑。
+2. **拉起 uid 2000 特权进程** — 特权代码**就在同一个 APK 的 dex 里**，用
+   `CLASSPATH=<已安装 APK>` 由 `app_process` 以 `--nice-name=com.byd.dashcast-priv` 拉起。
+   不需要单独的代理 jar，也不需要往设备写任何文件。
+3. **投屏** — 把目标应用送到 **display 3（投屏槽位）**：没有任务时
+   `am start-activity --display 3`，已有任务时 `am display move-stack <taskId> 3`。
+   槽位到仪表盘的映射由车机自己的 `com.byd.containerservice` 完成，本工程不插手。
+4. **预览** — 主界面上有一块与仪表屏 1:1 的 `TextureView`。特权进程用 `SurfaceControl`
+   复用仪表屏的 layerStack，把它的合成结果**直接接到这块 Surface 上**：
+   零抓帧、零编解码、零 CPU 回读。
+5. **触控注入** — 预览上覆盖一块同坐标系的透明层，手指事件由特权进程用
+   `InputManager.injectInputEvent` 注入到仪表屏。**仪表屏 `touch NONE`，所有输入都必须注入。**
+6. **看门** — 应用自己发起的 Activity 启动不带 display，AMS 会把整条 root task 挪回默认屏，
+   这是应用侧行为、无法预防，只能事后搬回。看门在有限时间窗内巡检并在必要时搬回，
+   `onPause` 立即松开，用户随时能夺回控制权。
 
 软件结构见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md)。
 
 ## 目录
 
 ```
-apk/        车机端应用：src/ res/ AndroidManifest.xml build.ps1
-  assets/   构建时填入代理 jar 与可选 ADB 私钥（内容不入库）
-agent/      uid-2000 代理：src/ build.ps1 run.ps1
-tools/      dashcast.ps1 —— 纯 adb 命令版的投屏/操控驱动，不需要装应用
-docs/       软件结构技术文档（面向二次开发）
-LICENSE     GNU GPL v3.0 全文
+apk/              车机端应用：src/ res/ AndroidManifest.xml build.ps1
+  assets/         构建时可选填入一把固定的 ADB 私钥（内容不入库）
+tools/            dashcast.ps1 —— 纯 adb 命令版的投屏/操控驱动，不需要装应用
+docs/             软件结构技术文档（面向二次开发）
+CHANGELOG.md      版本历史
+LICENSE           GNU GPL v3.0 全文
 ```
 
 ## 构建
 
 前置：JDK（`JAVA_HOME`）、Android SDK 含 `build-tools;35.0.0` 与 `platforms;android-32`。
-SDK 位置先读 `ANDROID_HOME`，没有则退回 `%LOCALAPPDATA%\Android\Sdk`。
+SDK 位置依次读 `ANDROID_HOME` → `ANDROID_SDK_ROOT` → `%LOCALAPPDATA%\Android\Sdk`；
+`preflight` 会打印解析结果，缺依赖时直接失败退出。
 
 ```powershell
-# 1) 先出代理 jar
-.\agent\build.ps1 -NoPush
-
-# 2) 再出 APK
 .\apk\build.ps1 -NoInstall
 ```
 
-产物为 `apk\dashcast.apk`。
+产物为 `apk\dashcast.apk`。链路是
+`preflight → assets → aapt2 compile → aapt2 link → javac → d8 → aapt add → zipalign → apksigner`。
 
 - 去掉 `-NoInstall` 并加 `-Serial <ip:port>` 可直接装到车机。
 - `apk\build.ps1 -BundledKey <某个.pk8>` 可把一把固定的 ADB 私钥打进 APK。
@@ -82,12 +101,6 @@ SDK 位置先读 `ANDROID_HOME`，没有则退回 `%LOCALAPPDATA%\Android\Sdk`�
 .\apk\build.ps1 -Keystore <keystore 路径> -StorePass <库口令> -KeyAlias <别名>
 ```
 
-换签名的后果是两条，不止一条：
-
-1. `adb install -r` 直接失败（签名不一致）；
-2. **即使装上，代理也不会再服务它** —— 代理的信任模型是**签名相等**
-   （`Agent.java:84-94`），换签名等于换信任域，已经在跑的那个代理会拒绝新应用。
-
 不传 `-Keystore` 时脚本仍退回 `apk\debug.keystore`；`debug.keystore` 只适合全新安装，
 永远升级不了用别的密钥签过的车机版本。传了 `-Keystore` 而文件不存在时脚本会**直接失败**，
 不会退回临时密钥 —— 那会产出一个装不上去的 APK。
@@ -100,40 +113,49 @@ SDK 位置先读 `ANDROID_HOME`，没有则退回 `%LOCALAPPDATA%\Android\Sdk`�
 
 ## 首次运行
 
-桌面入口是**免责声明页**（`DisclaimerActivity`），所以第一次打开的顺序是：
+桌面入口就是**主界面**（`CastActivity`）。若尚未授权，它会转到授权引导页，
+车机弹出「允许 USB 调试吗」。这里有一个必须做对的动作：
 
-```
-桌面图标 → 使用前须知 →（同意）→ 主界面 →（尚未授权时）授权引导 → 车机弹「允许 USB 调试吗」
-```
-
-- 免责声明在**任何调试通道动作之前**出现：它是 manifest 里的 LAUNCHER 入口，
-  所以"先看须知"是一条结构性约束，不是主界面里的一次判断。
-- 「同意」记在本机 SharedPreferences（键 `disclaimer_accepted_v1`），此后不再显示；
-  「不同意」直接退出应用，**不提供降级运行**。声明内容有实质改动时会升版本号重新征求同意。
-- 车机弹窗里**必须勾选「一律允许使用这台计算机进行调试」再点「允许」**：
+- 弹窗里**必须勾选「一律允许使用这台计算机进行调试」再点「允许」**：
   只点「允许」不会把公钥写进 `adb_keys`，下次打开还会再弹。
-- 授权完成后每次开机自动连接，不再需要任何操作。
+- 「一律允许」的授权有**静默期**（框架默认 604800000 ms = 7 天）：超过时限没有成功连接过一次，
+  框架会把密钥从 `adb_keys` 里删掉并重新弹框。**当前源码对这一点没有任何补偿**
+  （既不写 `adb_allowed_connection_time`，也没有别的续期动作），所以长期不动车就有可能要重新授权一次。
+  这是已知边界，见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) 第 12.2 节。
+- 授权完成后每次开机自动连接，不再需要任何操作 —— **前提是「开机自启」那条链真的走通了，
+  而它目前尚未在干净条件下验证通过**（同见 12.1 节）。
 
 ## 界面
 
-- **固定深色**，不跟随车机日夜主题：只有 `apk/res/values/colors.xml` 一套令牌，
-  没有 `values-night/`。白底在这块屏（驾驶员右手边）夜间会刺眼。
-- 车机是 1920×1080 @240dpi（1dp = 1.5px），布局一律用 `px` 排版：
-  顶栏 88 / 镜像区 720 / 底栏 96，合计 904 ≤ 907。
+- 布局一律用 `px` 排版（车机 1920×1080 @240dpi，1dp = 1.5px），因为这块屏的物理尺寸是固定的。
+- 主题是 `Theme.DeviceDefault.NoActionBar` 加半透明窗口 —— 半透明是**结构性必需**：
+  「窗口是否半透明」在窗口创建时就按 manifest 主题定死，`onCreate` 里的 `setTheme()` 改不动它。
+- 界面自身的根布局是不透明深色底；只有开机自启那条不 `setContentView` 的路径会整块窗口全透明，用户看不见。
 - 前端规格是一份独立的 HTML 预览稿（按 1:1 渲染 1920×1080），**不在本仓库内**。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [`SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) | 软件结构技术文档：模块划分、进程与 IPC 契约、启动流程、构建链、扩展点 |
+| [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) | 软件结构技术文档：模块划分、进程与 IPC 契约、启动流程、构建链、扩展点 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 版本历史与升级注意 |
 | [`LICENSE`](LICENSE) | GNU GPL v3.0 |
 
 ## 已知边界
 
-- **开机自启（`BootReceiver`）尚未在干净条件下验证通过** ——
-  不要在部署时假定「装完就不用管」。
-- 其余边界见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) 第 12 节。
+- **ADB 身份文件的写入不是持久化的**。`AdbKeyStore.write()` 是直接覆写：没有 `fsync`、
+  没有临时文件 + 原子替换、没有回读校验。车机掉电后它可能以"长度正确、内容全 0"的样子回来，
+  于是被判为损坏、删档重建，用户会再看到一次授权框。这是已知根因，尚未修。
+- **预览的帧率上限由被投屏的应用自己决定**。实测在导航地图上拖动时，那块屏本身就只有约 7.3 fps，
+  预览是忠实镜像，通路本身不设上限。关闭预览做同样的拖动对照，画面数反而略少，
+  可以排除"新 display 抢 GPU"。
+- **直通画面在内容静止时会"冻"在最后一帧**，这不是故障：SurfaceFlinger 不会对未变化的图层栈重复合成。
+  所以"画面不动"不能用来判断对端死活。
+- **端到端触控延迟尚未实测**。能确定的是每条事件已从"fork 一个进程（单次 40~140 ms）"
+  变成"一次 Binder oneway 调用"。
+- **看门的恢复延迟尚未实测**。
+- **开机自启（`BootReceiver`）尚未在干净条件下验证通过** —— 不要在部署时假定「装完就不用管」。
+- 其余边界见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) 的「已知边界与未确认项」一节。
 
 ## 开源与免费
 
