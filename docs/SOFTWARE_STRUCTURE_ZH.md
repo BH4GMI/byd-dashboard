@@ -16,9 +16,9 @@
 | 项 | 值 |
 | --- | --- |
 | 产物 | `apk/dashcast.apk`（`apk/dashcast.apk.idsig` 是 `apksigner` 的 v4 副产物，安装用不到） |
-| 包名 / 版本 | `com.byd.dashcast` · `versionName="4.1-cast-reliable"` · `versionCode="113"`（`AndroidManifest.xml:4-5`） |
+| 包名 / 版本 | `com.byd.dashcast` · `versionName="4.2-cast-hold"` · `versionCode="114"`（`AndroidManifest.xml:4-5`） |
 | SDK | `minSdk 26` / `targetSdk 32`（`:7-9`） |
-| 权限 | 只有 `INTERNET` 与 `RECEIVE_BOOT_COMPLETED`（`:12-14`）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
+| 权限 | `INTERNET`、`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE`（`:12-16`，最后一项给守位服务）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
 | 安装方式 | 普通应用安装（`untrusted_app`，实测 `userId=10124`）；**无 root、无系统签名** |
 
 特权代码就在这个 APK 的 dex 里：`com.byd.dashcast.privileged.*`，需要时由 App 用
@@ -78,12 +78,14 @@
 ```
 apk/                              车机端应用（唯一交付物）
   src/com/byd/dashcast/
-    CastActivity.java             主界面 + 预览三态状态机 + 触控转发 + 看门
+    CastActivity.java             主界面 + 预览三态状态机 + 触控转发 + 投屏链路（闭环归位）
+    CastGuardService.java         守位前台服务：投屏成立后持有屏位不变量，界面退出也继续（含「收回投屏」通知）
+    AppLog.java                   关键日志落盘（车机日志策略会丢弃第三方应用的 Log.*）
     GuideActivity.java            ADB 授权引导（兼"快速通道"）
     DashboardSession.java         仪表屏定位（投屏槽位 + 主投影屏两个 id）
-    DashboardEye.java             抓帧判页（两维三分类）
-    ShellChannel.java             ADB shell 长连接通道 + 看门原语
-    InjectClient.java             降级路径编排 + 应用枚举 + 看门状态机 + 抓帧预览
+    DashboardEye.java             抓帧判页（两维三分类；固定抓主投影屏，不跟窗口走）
+    ShellChannel.java             ADB shell 长连接通道 + 搬屏原语
+    InjectClient.java             降级路径编排 + 应用枚举 + 归位原语 ensureOnDisplay + 抓帧
     PrivilegedClient.java         App 侧 Binder 客户端（进程内单例）
     AppRepo.java / Favorites.java 应用条目 / 收藏（存包名）
     AutoCast.java                 「一键目标」与「首开自动」的持久化与判定

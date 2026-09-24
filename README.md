@@ -22,7 +22,7 @@
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
-> 当前版本 **4.1-cast-reliable**（`versionCode 113`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+> 当前版本 **4.2-cast-hold**（`versionCode 114`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
 
@@ -59,9 +59,10 @@ SecurityException: Permission Denial: ... with launchDisplayId=2
    零抓帧、零编解码、零 CPU 回读。
 5. **触控注入** — 预览上覆盖一块同坐标系的透明层，手指事件由特权进程用
    `InputManager.injectInputEvent` 注入到仪表屏。**仪表屏 `touch NONE`，所有输入都必须注入。**
-6. **看门** — 应用自己发起的 Activity 启动不带 display，AMS 会把整条 root task 挪回默认屏，
-   这是应用侧行为、无法预防，只能事后搬回。看门在有限时间窗内巡检并在必要时搬回，
-   `onPause` 立即松开，用户随时能夺回控制权。
+6. **守位** — 应用自己发起的 Activity 启动不带 display，AMS 会把整条 root task 挪回默认屏，
+   这是应用侧行为、无法预防，只能事后搬回。搬回由前台服务 `CastGuardService` 负责：
+   投屏成立后每 2 秒巡检一次，**界面退出也继续**；用户要收回，点常驻通知上的「收回投屏」，
+   目标被搬回主屏后服务停止。既不会自己过期，也不会把人钉在副屏上。
 
 软件结构见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md)。
 
@@ -153,8 +154,12 @@ SDK 位置依次读 `ANDROID_HOME` → `ANDROID_SDK_ROOT` → `%LOCALAPPDATA%\An
   所以"画面不动"不能用来判断对端死活。
 - **端到端触控延迟尚未实测**。能确定的是每条事件已从"fork 一个进程（单次 40~140 ms）"
   变成"一次 Binder oneway 调用"。
-- **看门的恢复延迟尚未实测**。
-- **开机自启（`BootReceiver`）尚未在干净条件下验证通过** —— 不要在部署时假定「装完就不用管」。
+- **守位的恢复延迟已实测**：把目标任务强制搬回主屏（`am display move-stack <id> 0`）后，
+  下一次巡检（≤2 s）就把它拉回投屏槽，`dashcast.log` 留痕。巡检间隔 2 s，所以最坏延迟就是 2 s。
+- **开机自启（`BootReceiver`）在本车上不会执行**：车机改过的广播队列会跳过第三方应用的开机广播
+  （`BroadcastQueue: skip reciever for uid … BOOT_COMPLETED … ignored !!!`，实测原文）。
+  所以 ADB 通道要等应用被拉起后现开，"装完不用管"只对**车机自己会自启的应用**成立 —— 见
+  [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) 的「已知边界与未确认项」一节。
 - 其余边界见 [`docs/SOFTWARE_STRUCTURE_ZH.md`](docs/SOFTWARE_STRUCTURE_ZH.md) 的「已知边界与未确认项」一节。
 
 ## 开源与免费
