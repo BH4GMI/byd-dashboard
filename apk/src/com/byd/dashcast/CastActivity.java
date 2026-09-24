@@ -73,8 +73,15 @@ public final class CastActivity extends Activity {
      * 由看门再搬回仪表屏（看门 1 秒一拍、搬完还有 3 秒静默期），这段时长是变动的。
      * 所以轮询代理给出的真实屏位，确认真回到仪表屏了再点。
      */
-    private static final long TASK_POLL_INTERVAL_MS = 250;
     private static final long TASK_SETTLE_TIMEOUT_MS = 8000;
+    /**
+     * 补点阶段每一轮"归位"的等待上限。
+     *
+     * <p>补点过程中目标应用自己还会启动（冷启动 → 主界面，那一次启动不带 display），
+     * 整条 root task 会被拽回主屏；不先归位就判页，抓到的是车机自己的界面。
+     * 3 秒足够一次搬屏 + 回查（实测单次 {@code dumpsys} 0.03s）。
+     */
+    private static final long TAP_PLACEMENT_TIMEOUT_MS = 3000;
     /** 目标本来就在仪表屏上：没有搬动，就没有跨屏重排，等一小会儿即可。 */
     private static final long SETTLE_STEADY_MS = 250;
     /** 闭环补点：抓一帧判页，最多点几次。 */
@@ -401,6 +408,8 @@ public final class CastActivity extends Activity {
 
     /** 两条路径都要有的东西：仪表盘屏定位 + 特权通道客户端 + 收藏。 */
     private void prepareSession() {
+        // 车机侧会丢掉第三方应用的 Log.*，关键节点必须落盘才留得下现场（见 AppLog）。
+        AppLog.init(this);
         session = new DashboardSession(this);
         session.resolve();
         injector = new InjectClient(this);
@@ -409,6 +418,10 @@ public final class CastActivity extends Activity {
         // 而不是指投屏槽位（抓槽位全黑、往槽位注入会被 InputDispatcher 丢掉）。
         injector.setProjectionDisplay(session.projectionDisplayId());
         favorites = new Favorites(this);
+        AppLog.i(TAG, "会话就绪：投屏槽=" + session.displayId()
+                + " 主投影屏=" + session.projectionDisplayId()
+                + " 由枚举命中=" + session.foundByName()
+                + " 日志=" + AppLog.path());
     }
 
     /**
@@ -646,29 +659,30 @@ public final class CastActivity extends Activity {
             @Override
             public void run() {
                 int at = injector.taskDisplay(target.packageName);
-                // 只有真的找到任务（屏位 >= 0）才走搬屏。-1 表示"没有该任务"、-2 表示
-                // 原语不可用，这两种都必须去启动——上一版把 -1 也当成"有任务"，
-                // 结果该启动的时候搬了个空，脚本静默失败。
+                AppLog.i(TAG, "投屏开始：目标=" + target.packageName
+                        + " 目标屏=" + display + " 当前屏位=" + at);
+                // 只有真的找到任务（屏位 >= 0）才走归位。找不到（-1）就必须去启动 ——
+                // 上一版把 -1 也当成"有任务"，结果该启动的时候搬了个空，脚本静默失败。
                 if (at >= 0) {
-                    // 已经有任务：搬过去，不要再 am start。
+                    // 已经有任务：归位过去，不要再 am start。
                     // `am start-activity --display N` 在目标屏上没有该包的任务时会新建一条
                     // root task，结果同一个应用在两块屏上各跑一份、各有各的页面和动画
                     // （实测踩过：网易云在 display 0 和 display 2 上同时活着）。
-                    Log.i(TAG, "目标已有任务（在 display " + at + "），改为搬屏而非新启动");
-                    int[] moved = injector.moveToDisplay(target.packageName, display);
-                    Log.i(TAG, "搬屏结果：原屏=" + moved[0] + " 搬动=" + moved[1]);
-                    if (moved[1] == 1) {
+                    Log.i(TAG, "目标已有任务（在 display " + at + "），改为归位而非新启动");
+                    if (injector.ensureOnDisplay(target.packageName, display,
+                            TASK_SETTLE_TIMEOUT_MS)) {
                         quickCastOk = true;
                         settleThenTap(target, display, onDone,
                                 at == display ? SETTLE_STEADY_MS : SETTLE_AFTER_MOVE_MS);
                         return;
                     }
-                    // 搬屏没生效。**绝不能在这里报成功** —— 那会变成"点了没反应、
+                    // 归位没生效。**绝不能在这里报成功** —— 那会变成"点了没反应、
                     // 状态栏却说已投屏"，而用户完全不知道发生了什么。
-                    // （搬屏成不成功由 ShellChannel 回查屏位判定，不看命令有没有回话。）
+                    // （成不成功由回查屏位判定，不看命令有没有回话。）
                     final String fail = getString(R.string.cast_failed)
                             + getString(R.string.cast_move_failed);
-                    Log.w(TAG, "搬屏未生效，原屏=" + moved[0] + " 目标屏=" + display);
+                    Log.w(TAG, "归位未生效，原屏=" + at + " 目标屏=" + display);
+                    AppLog.w(TAG, "归位未生效：原屏=" + at + " 目标屏=" + display);
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -735,24 +749,34 @@ public final class CastActivity extends Activity {
         long deadline = SystemClock.uptimeMillis() + TARGET_DEADLINE_MS;
         int taps = 0;
         while (SystemClock.uptimeMillis() < deadline) {
+            // 每轮先归位：补点期间目标应用自己还会启动（冷启动 → 主界面，那次启动不带
+            // display），整条 root task 会被拽回主屏。不先归位就判页，抓到的是车机自己的
+            // 界面，点下去也点在别人身上（实测踩过：一次点在车机导航上）。
+            if (!injector.ensureOnDisplay(target.packageName, display,
+                    TAP_PLACEMENT_TIMEOUT_MS)) {
+                AppLog.w(TAG, "补点闭环：目标不在投屏屏 display " + display + " 上，先等它回来");
+                sleepQuietly(PAGE_POLL_MS);
+                continue;
+            }
             Bitmap frame = DashboardEye.grab(injector, CLUSTER_WIDTH, CLUSTER_HEIGHT);
             DashboardEye.Page page = DashboardEye.classify(frame);
             if (frame != null) {
                 frame.recycle();
             }
+            AppLog.i(TAG, "补点闭环：判页=" + page + "（已点 " + taps + " 次）");
 
             if (page == DashboardEye.Page.LYRICS) {
-                Log.i(TAG, "补点闭环：已到歌词播放页（共点 " + taps + " 次）");
+                AppLog.i(TAG, "补点闭环：已到歌词播放页（共点 " + taps + " 次）");
                 return true;
             }
 
             if (page == DashboardEye.Page.HOME) {
                 if (taps >= TAP_MAX_ATTEMPTS) {
-                    Log.w(TAG, "补点闭环：点了 " + taps + " 次仍停在首页");
+                    AppLog.w(TAG, "补点闭环：点了 " + taps + " 次仍停在首页");
                     return false;
                 }
                 taps++;
-                Log.i(TAG, "补点闭环：第 " + taps + " 次点击 " + point[0] + "," + point[1]
+                AppLog.i(TAG, "补点闭环：第 " + taps + " 次点击 " + point[0] + "," + point[1]
                         + " → " + target.packageName);
                 tapOnCluster(point[0], point[1]);
                 sleepQuietly(TAP_SETTLE_MS);
@@ -760,10 +784,10 @@ public final class CastActivity extends Activity {
             }
 
             // OTHER：多半是冷启动还没画出来，或者是车机自己的页面。继续等，别乱点也别报成功。
-            Log.i(TAG, "补点闭环：还没到目标页（已点 " + taps + " 次），继续等");
+            AppLog.i(TAG, "补点闭环：还没到目标页（已点 " + taps + " 次），继续等");
             sleepQuietly(PAGE_POLL_MS);
         }
-        Log.w(TAG, "补点闭环：等满 " + TARGET_DEADLINE_MS + " ms 仍未到歌词播放页");
+        AppLog.w(TAG, "补点闭环：等满 " + TARGET_DEADLINE_MS + " ms 仍未到歌词播放页");
         return false;
     }
 
@@ -789,43 +813,42 @@ public final class CastActivity extends Activity {
         Thread worker = new Thread(new Runnable() {
             @Override
             public void run() {
-                long deadline = SystemClock.uptimeMillis() + TASK_SETTLE_TIMEOUT_MS;
-                int actual = -2;
-                while (true) {
-                    actual = injector.taskDisplay(target.packageName);
-                    if (actual == display || actual == -2
-                            || SystemClock.uptimeMillis() >= deadline) {
-                        break;
-                    }
-                    try {
-                        Thread.sleep(TASK_POLL_INTERVAL_MS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-                boolean ok = actual == display;
-                if (actual == display) {
-                    try {
-                        Thread.sleep(settleMs);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                // 闭环归位：不在投屏槽上就搬回去并回查，**不再只旁观**。
+                // 2026-09-24 实测：首开自动那次启动的任务被建在 display 0，旧实现只观察到
+                // 超时就放弃 —— 仪表槽 3/4 全程为空，用户在仪表屏上什么也看不到。
+                boolean placed = injector.ensureOnDisplay(target.packageName, display,
+                        TASK_SETTLE_TIMEOUT_MS);
+                boolean ok = false;
+                if (placed) {
+                    sleepQuietly(settleMs);
                     ok = tapUntilTargetPage(target, display);
                 } else {
-                    Log.w(TAG, "投屏未生效：" + target.packageName
-                            + " 屏位=" + actual + "，目标=" + display);
+                    AppLog.w(TAG, "投屏未生效：" + target.packageName
+                            + " 未能在 display " + display + " 上归位");
                 }
                 final boolean reached = ok;
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         if (reached) {
+                            AppLog.i(TAG, "投屏完成：" + target.packageName
+                                    + " 已到目标页（display " + display + "）");
+                            // 交给守位服务：本界面马上要退场（首开自动那条链路跑完就 finish），
+                            // 屏位不变量不能再挂在界面线程上，否则应用自己一跳就丢投屏。
+                            CastGuardService.start(CastActivity.this, target.packageName,
+                                    display, target.label);
                             setStatus(getString(R.string.quick_done) + target.label);
                         } else {
                             // 没到目标页就如实说，不能报"已投屏并展开"。
+                            // 而且要**说出来**：首开自动没有界面，不弹这一下的话
+                            // 用户只会看到"仪表盘上什么都没发生"（2026-09-24 实测踩过）。
                             quickCastOk = false;
-                            setStatus(getString(R.string.quick_incomplete) + target.label);
+                            final String incomplete =
+                                    getString(R.string.quick_incomplete) + target.label;
+                            AppLog.w(TAG, "投屏未完成：" + target.packageName
+                                    + "（display " + display + "）");
+                            setStatus(incomplete);
+                            toast(incomplete);
                         }
                         // 投屏这一刻 session 才变成 active，预览要在条件刚齐时补一次启动。
                         // 判页抓帧走主连接、预览走预览连接，两者互不干扰 —— 所以这里不再是
@@ -969,6 +992,10 @@ public final class CastActivity extends Activity {
                                     watchedPackage = entry.packageName;
                                     watchState = null;
                                     injector.watch(entry.packageName, session.displayId(), false);
+                                    // 界面级的看门只覆盖"界面还在"的那段；投屏要活到用户收回，
+                                    // 所以同时交给守位服务（它不随界面退出）。
+                                    CastGuardService.start(CastActivity.this, entry.packageName,
+                                            session.displayId(), entry.label);
                                 }
                             }
                         });
@@ -1377,6 +1404,7 @@ public final class CastActivity extends Activity {
         // 用户在主屏点该应用图标、或从最近任务拉它时，本界面必然 pause；
         // 看门必须在那一刻松手，否则会把任务又搬回副屏，表现为"按了回不到前台"。
         // 第二道保证是 InjectClient 里看门窗口的硬上限（绝不允许无限期钉住）。
+        AppLog.i(TAG, "界面 onPause（autoMode=" + autoMode + "）：松开看门与预览");
         stopWatching();
         stopPreviewIfRunning();
         super.onPause();
@@ -1405,7 +1433,7 @@ public final class CastActivity extends Activity {
         if (watchedPackage == null) {
             return;
         }
-        Log.i(TAG, "停止看门：" + watchedPackage);
+        AppLog.i(TAG, "界面撤销看门：" + watchedPackage + "（此后没有人再把它搬回投屏槽）");
         watchedPackage = null;
         watchState = null;
         injector.unwatch();

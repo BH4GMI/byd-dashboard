@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.byd.dashcast"
-    android:versionCode="113"
-    android:versionName="4.1-cast-reliable">
+    android:versionCode="114"
+    android:versionName="4.2-cast-hold">
 
     <uses-sdk
         android:minSdkVersion="26"
@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 开机后自己把 ADB 特权通道接上，让用户不必再插电脑。 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 投屏守位服务：投屏成立后屏位不变量由它持有，界面退出也不松开。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <!--
       包可见性声明。**没有它，应用列表里一半的条目显示的是包名而不是应用名。**
@@ -70,5 +72,14 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!--
+          投屏守位：不导出。只有本应用（界面链路、通知按钮）能启停它；
+          通知上的「收回投屏」是一个 PendingIntent.getService，同 UID，不受导出限制。
+        -->
+        <service
+            android:name="com.byd.dashcast.CastGuardService"
+            android:exported="false"
+            android:stopWithTask="false" />
     </application>
 </manifest>

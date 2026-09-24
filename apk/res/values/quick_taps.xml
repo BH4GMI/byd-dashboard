@@ -19,13 +19,23 @@
 
   唯一稳定的入口是「点首页左栏封面」，所以这里存的是落点。
 
+  quick_activity 必须是**真正停在仪表屏上的那个 Activity**，不能填 LAUNCHER 入口：
+  桌面入口 LoadingActivity 是个闪屏，它自己再拉 CloudMusicRNActivity，而**那一次启动不带
+  display**，AMS 就按默认屏解析 —— 整条 root task 当场从投屏槽被挪回主驾屏，投屏丢失。
+  实测两次都复现（2026-09-13、2026-09-24），2026-09-24 的证据：
+    12:22:34.582 启动 LoadingActivity（带 display 3 参数，投屏成功）
+    12:22:36.837 START …CloudMusicRNActivity from uid 10102（不带 display）
+    12:22:36.936 Top Activity changed to com.netease.cloudmusic.iot, display = 0
+  CloudMusicRNActivity 的 android:exported=true（2026-09-24 用 aapt2 dump 核实），
+  uid 2000 可以直接启动它，所以这里填它。改回 LoadingActivity 就会复发。
+
   格式：包名:横坐标:纵坐标（仪表屏 1920x720 坐标系，与镜像预览区 1:1）。
   实测于 2026-02，网易云 6.2.01。版本升级后若失效需重测——
   重测方法：把应用投到仪表屏，抓 display 2 的截图，量出左栏封面中心。
 -->
 <resources>
     <string name="quick_package">com.netease.cloudmusic.iot</string>
-    <string name="quick_activity">com.netease.cloudmusic.iot.app.LoadingActivity</string>
+    <string name="quick_activity">com.netease.cloudmusic.activity.CloudMusicRNActivity</string>
     <string name="quick_label">网易云</string>
 
     <string-array name="quick_taps">

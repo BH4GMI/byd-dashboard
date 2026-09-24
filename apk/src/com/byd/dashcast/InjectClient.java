@@ -171,7 +171,7 @@ public final class InjectClient {
         long now = android.os.SystemClock.uptimeMillis();
         if (now > watchDeadline || now - watchStartedAt > WATCH_MAX_TOTAL_MS) {
             // 窗口结束：交还控制权。这一步不能省——它才是"用户能拿回前台"的保证。
-            Log.i(TAG, "看门窗口结束，松开 " + pkg + "（共搬回 " + watchMoves + " 次）");
+            AppLog.i(TAG, "看门窗口结束，松开 " + pkg + "（共搬回 " + watchMoves + " 次）");
             watchedPackage = null;
             watchedDisplay = -1;
             watchNote = "看门已松开";
@@ -187,11 +187,11 @@ public final class InjectClient {
                 watchDeadline = Math.min(now + WATCH_EXTEND_MS,
                         watchStartedAt + WATCH_MAX_TOTAL_MS);
                 watchNote = "已搬回 " + watchMoves + " 次";
-                Log.i(TAG, "看门：把 " + pkg + " 从 display " + cur
+                AppLog.i(TAG, "看门：把 " + pkg + " 从 display " + cur
                         + " 搬回 display " + watchedDisplay + "（第 " + watchMoves + " 次）");
             } else {
                 watchNote = "搬回失败";
-                Log.w(TAG, "看门：搬回 " + pkg + " 失败");
+                AppLog.w(TAG, "看门：搬回 " + pkg + " 失败");
             }
         }
         lastWatch = new WatchState(true, watchMoves, watchNote, pkg);
@@ -220,13 +220,13 @@ public final class InjectClient {
         this.watchNote = "";
         this.watchStartedAt = now;
         this.watchDeadline = now + WATCH_WINDOW_MS;
-        Log.i(TAG, "开始看门：" + packageName + " 必须留在 display " + displayId
-                + "（窗口 " + (WATCH_WINDOW_MS / 1000) + "s）");
+        AppLog.i(TAG, "开始看门：" + packageName + " 必须留在 display " + displayId
+                + "（窗口 " + (WATCH_WINDOW_MS / 1000) + "s，persistent=" + persistent + "）");
     }
 
     public void unwatch() {
         if (watchedPackage != null) {
-            Log.i(TAG, "停止看门：" + watchedPackage);
+            AppLog.i(TAG, "停止看门：" + watchedPackage);
         }
         this.watchedPackage = null;
         this.watchedDisplay = -1;
@@ -238,13 +238,61 @@ public final class InjectClient {
         return shell.taskDisplay(packageName);
     }
 
-    public int[] moveToDisplay(String packageName, int displayId) {
-        int from = shell.taskDisplay(packageName);
-        if (from < 0) {
-            return new int[]{-1, 0};
+    /** 归位轮询间隔。与界面心跳的 2s 不同：链路线程自己持有不变量，可以问得勤一点。 */
+    private static final long SETTLE_POLL_MS = 250L;
+
+    /**
+     * 把目标包**钉在**目标屏：发现它已经在别处就搬回去并回查，直到确认它落在
+     * {@code displayId} 上，或超过 {@code timeoutMs} 放弃。
+     *
+     * <p>存在的理由（2026-09-24 实车结论）：{@code am start-activity --display N}
+     * **不保证**任务真的落在 N 上 —— 开机后首开自动那一次，网易云任务被建在 display 0，
+     * 而链路里只有"旁观屏位"没有"纠正屏位"，于是投屏静默失败：仪表槽 3/4 全程为空，
+     * 用户在仪表屏上什么也看不到，应用侧也没有任何可见反馈。
+     *
+     * <p>看门（{@link #watch} + {@link #ping()}）虽然会搬回，但它的生命周期挂在界面上
+     * （{@code onPause} 就松开），而首开自动那条链路**没有界面**。所以不变量必须由
+     * 发起投屏的那条线程自己持有，而不是借别人的生命周期。
+     *
+     * <p>把"还没有任务"（{@code -1}）与"任务在别处"分开：前者只能等（应用还在冷启动），
+     * 后者才值得搬 —— 对不存在的任务发 {@code move-stack} 只会白跑。
+     *
+     * @return true 仅当确认目标已在 {@code displayId} 上
+     */
+    public boolean ensureOnDisplay(String packageName, int displayId, long timeoutMs) {
+        long deadline = android.os.SystemClock.uptimeMillis() + timeoutMs;
+        int last = Integer.MIN_VALUE;
+        int moves = 0;
+        while (true) {
+            int cur = shell.taskDisplay(packageName);
+            if (cur == displayId) {
+                if (moves > 0) {
+                    AppLog.i(TAG, "归位完成：" + packageName + " 已在 display " + displayId
+                            + "（共搬回 " + moves + " 次）");
+                }
+                return true;
+            }
+            last = cur;
+            if (cur >= 0) {
+                boolean ok = shell.moveToDisplay(packageName, displayId);
+                if (ok) {
+                    moves++;
+                }
+                AppLog.i(TAG, (ok ? "归位：把 " : "归位失败：") + packageName + " 从 display "
+                        + cur + " 搬向 display " + displayId);
+            }
+            if (android.os.SystemClock.uptimeMillis() >= deadline) {
+                AppLog.w(TAG, "归位超时：" + packageName + " 屏位=" + last
+                        + "，目标 display=" + displayId);
+                return false;
+            }
+            try {
+                Thread.sleep(SETTLE_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
-        boolean ok = shell.moveToDisplay(packageName, displayId);
-        return new int[]{from, ok ? 1 : 0};
     }
 
     // ---- 投屏 --------------------------------------------------------------
@@ -252,9 +300,11 @@ public final class InjectClient {
     /**
      * 把目标应用送上网守 display。
      *
-     * <p>注意：这条命令**只负责启动**。有些应用（实测 B 站）的 exported 入口是闪屏，
-     * 它自己再拉主界面时那一次启动不带 display，AMS 会把整条 root task 挪回默认屏；
-     * 兜底靠看门（{@link #watch} + {@link #ping()}）。
+     * <p>注意：这条命令**只负责启动，不保证任务真的落在目标屏上**。有些应用
+     * （实测 B 站）的 exported 入口是闪屏，它自己再拉主界面时那一次启动不带 display，
+     * AMS 会把整条 root task 挪回默认屏；{@code --display N} 本身在首开自动那次
+     * 也没有生效（任务被建在 display 0）。所以启动之后必须由调用方
+     * {@link #ensureOnDisplay} 归位并回查 —— 这是投屏能否成立的唯一判据。
      *
      * <p>另一条真实约束：只有 **exported** 的 Activity 能被 uid 2000 启动。
      * 传错会拿到 {@code SecurityException: not exported from uid}，所以这里把原始输出
@@ -306,15 +356,21 @@ public final class InjectClient {
     // ---- 输入 --------------------------------------------------------------
 
     /**
-     * 抓一帧画面（PNG 字节），失败返回 null。
+     * 抓一帧**仪表盘实际显示的内容**（PNG 字节），失败返回 null。
      *
-     * <p>抓的是 {@link #inputDisplay()} —— 也就是**镜像屏**而不是投屏屏。
-     * 投屏屏（共享 3/4）是黑的中转屏，抓它只会得到全黑帧，判页必然失败。
+     * <p>固定抓**主投影屏**（display 2）：共享槽位 3/4 只是中转，内容由容器服务镜像到
+     * display 2 才看得见，抓槽位只会得到全黑帧。
+     *
+     * <p>**为什么不能跟着"目标窗口挂在哪块屏"走**（2026-09-24 实测）：目标应用自己发起的
+     * 启动不带 display，AMS 会把整条 root task 挪回主屏；那一刻若按窗口位置抓帧，抓到的
+     * 就是**主屏上那个页面**，判页随即把它当成仪表屏的画面 —— 实测正是这样误报了
+     * "已到歌词播放页"，而仪表屏当时显示的是车机自己的界面。
+     * 判页的语义只有一个：**仪表屏上现在显示什么**。
      */
-    public byte[] captureFrame() {
-        int display = inputDisplay();
+    public byte[] captureProjectionFrame() {
+        int display = projectionDisplay;
         if (display < 0) {
-            Log.w(TAG, "抓帧被丢弃：还没设定目标 display");
+            Log.w(TAG, "抓帧被丢弃：还不知道主投影屏是哪一块");
             return null;
         }
         return shell.screencap(display);

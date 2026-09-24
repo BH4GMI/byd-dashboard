@@ -11,8 +11,12 @@ import android.util.Log;
  * 也不知道点完有没有反应。实测踩过两次：一次点在车机导航上（应用其实还没被搬回仪表屏），
  * 一次点了但页面没变——两次都没有任何反馈，脚本照样报"已展开"。
  *
- * 抓帧走 {@code screencap -d <镜像屏>}（见 {@link InjectClient#captureFrame}），
- * 不再是 App 侧镜像：那条路要往 uid 2000 里塞代码，本版本已整体移除。
+ * 抓帧固定走**主投影屏**（{@code screencap -d 2}，见
+ * {@link InjectClient#captureProjectionFrame}），不再是 App 侧镜像：那条路要往
+ * uid 2000 里塞代码，本版本已整体移除。
+ *
+ * <p>**判页永远只判仪表屏**。2026-09-24 实测：跟"目标窗口当前挂在哪块屏"走会在目标被
+ * 应用自己拽回主屏时判到主屏上，于是误报"已到歌词播放页"。
  */
 public final class DashboardEye {
 
@@ -33,7 +37,7 @@ public final class DashboardEye {
             return null;
         }
         try {
-            byte[] png = injector.captureFrame();
+            byte[] png = injector.captureProjectionFrame();
             if (png == null) {
                 Log.w(TAG, "抓帧失败：screencap 没返回可用数据");
                 return null;

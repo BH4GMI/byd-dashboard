@@ -41,4 +41,9 @@
     <string name="auto_running">首开自动：正在执行 </string>
     <string name="auto_failed">首开自动失败：</string>
     <string name="auto_agent_offline">首开自动失败：ADB 通道未连接</string>
+    <!-- 投屏守位服务：常驻通知既满足前台服务的平台要求，也是用户收回投屏的入口。 -->
+    <string name="guard_channel">投屏守位</string>
+    <string name="guard_title">仪表屏正在显示：%1$s</string>
+    <string name="guard_text">应用自己跳回主屏时会被自动拉回</string>
+    <string name="guard_release">收回投屏</string>
 </resources>

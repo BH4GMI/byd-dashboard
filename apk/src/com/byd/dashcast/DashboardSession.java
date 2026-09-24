@@ -2,7 +2,6 @@ package com.byd.dashcast;
 
 import android.content.Context;
 import android.hardware.display.DisplayManager;
-import android.util.Log;
 import android.view.Display;
 
 /**
@@ -35,6 +34,14 @@ import android.view.Display;
  * </ul>
  *
  * 旧实现把 {@code CLUSTER_DISPLAY_ID} 写死成 2，是"投上去了但看不见"的根因。
+ *
+ * <h3>2026-09-24 补充实测：投到槽位 ≠ 任务真的落在槽位上</h3>
+ *
+ * 解析出正确的槽位只是第一步。同日实车复盘发现：首开自动那次
+ * {@code am start-activity --display 3 -n …} 之后，网易云任务被建在 display 0
+ * （{@code wm_create_task: [0,10]}），仪表槽 3/4 全程为空 —— 也就是
+ * <b>启动参数不保证落点</b>。链路里必须有人搬回去并回查
+ * （{@link InjectClient#ensureOnDisplay}），解析结果本身不能当成"已经投上去了"。
  */
 public final class DashboardSession {
 
@@ -104,7 +111,7 @@ public final class DashboardSession {
                 continue;
             }
             String name = display.getName();
-            Log.i(TAG, "应用可见的候选屏 display=" + id + " name=" + name
+            AppLog.i(TAG, "应用可见的候选屏 display=" + id + " name=" + name
                     + " flags=0x" + Integer.toHexString(display.getFlags()));
             if (name == null) {
                 continue;
@@ -126,21 +133,21 @@ public final class DashboardSession {
         if (sharedFallback >= 0) {
             displayId = sharedFallback;
             foundByName = true;
-            Log.i(TAG, "副屏按名字命中共享变体 _0：displayId=" + displayId);
+            AppLog.i(TAG, "副屏按名字命中共享变体 _0：displayId=" + displayId);
         } else if (shared >= 0) {
             displayId = shared;
             foundByName = true;
-            Log.i(TAG, "副屏命中共享变体（非 _0）：displayId=" + displayId);
+            AppLog.i(TAG, "副屏命中共享变体（非 _0）：displayId=" + displayId);
         } else {
             displayId = SHARED_DISPLAY_FALLBACK_ID;
             foundByName = false;
-            Log.i(TAG, "枚举不到共享变体（可见性过滤），改用车机常量 displayId=" + displayId
+            AppLog.i(TAG, "枚举不到共享变体（可见性过滤），改用车机常量 displayId=" + displayId
                     + "（主投影屏=" + projectionDisplayId + "，它不是投屏目标）");
         }
 
         if (projectionDisplayId < 0) {
             projectionDisplayId = PROJECTION_DISPLAY_FALLBACK_ID;
-            Log.i(TAG, "主投影屏枚举不到（可见性过滤），用实测常量 displayId=" + projectionDisplayId);
+            AppLog.i(TAG, "主投影屏枚举不到（可见性过滤），用实测常量 displayId=" + projectionDisplayId);
         }
         return displayId;
     }
