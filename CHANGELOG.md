@@ -15,6 +15,86 @@
 
 ---
 
+## 5.3 — versionCode 121（**正式 release，仍未实机验证**）
+
+> ⚠️ **本版没有装车验证过。** 最近一个经实车验证的版本是 `4.3-user-intent`（`versionCode 115`），其 release 仍然可下载。
+> 本版 = `5.1` + `5.2` + 下面两批改动。
+
+### 新增：`am` 启动失败时的备用启动通路
+
+常规启动走 `am start-activity --display N`。它与 Java 层的 `ActivityOptions.setLaunchDisplayId`
+**内部同源、同一处服务端校验**，但 `am` 的参数面随系统构建有漂移的可能（个别 Android 10
+构建上 `--display` 是否可用无法离线证实）；而任务建不起来时，归位逻辑（`ensureOnDisplay`）
+也无从归位——这次投屏就没有任何补救手段了。
+
+因此新增一条兜底：`am` 失败后，让特权进程（uid 2000）用
+`ActivityOptions.setLaunchDisplayId(display)` + `Context.startActivity` 直接启动。
+这条形式被 DiLink 3/4 的参考实现在 Android 10 上实证过（编译期常量 + 服务端 `displayId > 0` 把守）。
+
+- **首选路径完全不变**：`am` 成功就永远不走兜底。
+- **成功判据不降级**：兜底受理后仍走闭环归位回查屏位，成不成立由实际屏位判定，不看命令回话。
+- **绝不重启已运行的特权进程**：Binder 已在就直接用，不在才拉起 —— 预览进程的目标屏与投屏槽
+  在 5.x 上是两块屏，为兜底而重启会把预览拉到错的屏上。
+- 两个通路的错误都会一起报给用户，不吞任何一方。
+
+### 新增：仪表屏真实分辨率的核对
+
+触控板按 `1920x720` **1:1** 转发触摸坐标。若仪表屏不是这个分辨率，触摸与补点会**整体偏移**，
+而此前用户端没有任何迹象（参考实现为此专门做了校准界面，说明这是真实存在的失败类）。
+
+现在从 `dumpsys display` 的同一行解析出仪表屏的 `real W x H`：与触控板不一致时写 `dashcast.log`
+并弹一次提示；分辨率相同时（5.0 实测两块屏均为 `1920x720`）行为逐项不变。
+
+**这一版刻意只核对、不缩放。** 按屏缩放要按目标屏真实尺寸改坐标，属于行为变更；在拿到 4.0
+实车分辨率之前不做——**先测量，再修**。
+
+### 验证
+
+- 构建门禁 `apk/build.ps1 -NoInstall` exit=0；`aapt dump badging` 报 `versionCode='121'` / `versionName='5.3'`；签名证书 `CN=BH4GMI` 与 `5.1` 相同（可覆盖安装）。
+- API 级别审计（对构建出的 `classes.dex`）：441 个框架引用，**0 个需要 API > 29**，最高 API 26（= `minSdk`）。
+- 屏表判定的离线用例 5 组结果与 `5.1` **逐字相同**（判定与文案均未变）。
+
+---
+
+## 5.2 — versionCode 120（**未单独发布，内容并入 5.3**）
+
+> ⚠️ 本版没有单独发过 release；其全部内容包含在 `5.3` 里。
+
+### 消除主线程 IO
+
+「返回 / 主页」按钮与通知栏「收回投屏」原先在 UI 线程直接下发 shell 命令（socket IO），
+会抛 `NetworkOnMainThreadException`（项目内实测结论）。现已排到后台单线程队列：
+按键与触摸共用同一条队列，手势与按键的先后顺序因此有保证。
+
+### 修掉心跳的重挂竞态
+
+`onPause` 里只用 `removeCallbacks` 拦不住「正跑到一半的心跳在 `remove` 之后又把自己挂回队列」——
+那条漏网路径会让界面在后台期间每 2 秒继续巡检（shell IO），直到 `onDestroy` 才停。
+现在心跳带**代次**（epoch）：`onPause` 递增代次 + 清队列，在途与排队中的心跳全部作废，
+且续挂前后各核对一次，保证作废后队列里不残留心跳。
+
+### 修掉预览 Surface 的时序竞态
+
+预览的 `SET_SURFACE` 排到 io 线程后，`CLEAR_SURFACE` 仍在 UI 线程同步发送：若提交在途时用户
+退出或界面重建，清除会先到对端、Surface 先被释放，排队的提交随后把**已释放的 Surface**
+绑回对端。老的全同步实现不存在这条路径。
+
+现在两个事务共用一把锁定序，并在事务发出前复核 Surface 是否仍是最新的一块：
+对端看到的事务顺序只剩「提交 → 清除」（清除最终生效）或「提交被拦下」两种，
+已释放的 Surface 不可能再被绑定。若提交期间 Surface 被替换，会自动改交最新的那一块。
+
+### 工程链路加固
+
+- `.gitignore` 补 `apk/assets/adb_identity.pk8` 与 `apk/debug.keystore`（防凭据误提交；两者从未入库过）。
+- `apk/build.ps1`：工具预检补 `aapt`；签名后新增终检（`apksigner verify --print-certs` +
+  `aapt dump badging`），**「manifest 忘改版本号就发版」当场现形**。
+- `scripts/sync_netease_fork.ps1`：复制前断言清单与源码树集合相等，新增文件漏登记从静默跳过变为当场失败。
+- `tools/dashcast.ps1` / `probe/build.ps1`：修 `dashbord` 拼写，去掉与本机绑定的绝对路径（改用
+  `ANDROID_HOME` / `ANDROID_SDK_ROOT` / `PATH` 三级回退）。
+- `README.md`：分支同步状态的陈述改为指向事实来源，不再随版本腐化。
+
+---
+
 ## 5.1 — versionCode 119（2026-09-28，**正式 release，仍未实机验证**）
 
 > ⚠️ **本版没有装车验证过。** 最近一个经实车验证的版本是 `4.3-user-intent`（`versionCode 115`），其 release 仍然可下载。

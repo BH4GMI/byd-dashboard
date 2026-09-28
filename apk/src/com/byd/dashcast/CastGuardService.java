@@ -117,6 +117,15 @@ public final class CastGuardService extends Service {
     private volatile String targetLabel = "";
 
     /**
+     * 守位意图的代次：每次收到 ACTION_GUARD 时递增（主线程）。
+     *
+     * <p>RELEASE 要排到守位线程执行（见 {@link #onStartCommand}），排队期间用户可能
+     * 又发起了新的守位（收回后立刻重投）。此时新的意图优先：过期的收回作废，
+     * 否则会把刚成立的守位当场停掉。
+     */
+    private volatile int guardSeq;
+
+    /**
      * 投屏成立时刻（设备墙钟）。只认这之后的启动记录 —— 否则用户投屏之前那次"点图标"
      * 会把刚成立的投屏立刻释放掉。
      */
@@ -230,7 +239,22 @@ public final class CastGuardService extends Service {
         AppLog.init(this);
         String action = intent == null ? null : intent.getAction();
         if (ACTION_RELEASE.equals(action)) {
-            release(true);
+            // release 要跑 shell 命令（taskDisplay / ensureOnDisplay，socket IO），而
+            // onStartCommand 在主线程上 —— 直接做会抛 NetworkOnMainThreadException
+            // （同 CastActivity 触摸路径的实测结论）。排到守位线程，还顺带让 release
+            // 与 patrol 天然串行（两者都改 targetPackage / guardDisplay，并发改没有同步）。
+            ensureThread();
+            final int seq = guardSeq;
+            handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (guardSeq != seq) {
+                        // 排队期间又来了新的守位意图：新的优先，这次收回作废。
+                        return;
+                    }
+                    release(true);
+                }
+            });
             return START_NOT_STICKY;
         }
         String pkg = intent == null ? null : intent.getStringExtra(EXTRA_PACKAGE);
@@ -242,6 +266,7 @@ public final class CastGuardService extends Service {
         targetPackage = pkg;
         guardDisplay = intent.getIntExtra(EXTRA_DISPLAY, -1);
         targetLabel = intent.getStringExtra(EXTRA_LABEL);
+        guardSeq++;
         // 用户意图判据的基准点：只看这之后的启动记录。
         establishedAtMs = System.currentTimeMillis();
         ignoredUids = ignoredUidsFor(pkg);

@@ -44,7 +44,7 @@ Write-Output ("  SDK   : {0}" -f $sdk)
 # 缺东西就当场停。继续跑下去只会在几步之后抛一个与真实原因无关的错，
 # 让人以为是脚本逻辑坏了，而不是"这台机器没装齐"。
 $missing = @()
-foreach ($tool in @('aapt2.exe', 'zipalign.exe', 'apksigner.bat', 'd8.bat')) {
+foreach ($tool in @('aapt2.exe', 'aapt.exe', 'zipalign.exe', 'apksigner.bat', 'd8.bat')) {
     $p = Join-Path $bt $tool
     if (-not (Test-Path $p)) { $missing += $p }
     Write-Output ("  {0} : {1}" -f $tool, (Test-Path $p))
@@ -213,6 +213,18 @@ $apkOut = Join-Path $root 'dashcast.apk'
 if (Test-Path $apkOut) { Remove-Item -Force $apkOut }
 & (Join-Path $bt 'apksigner.bat') sign --ks $ks --ks-pass "pass:$ksPass" --ks-key-alias $alias --key-pass "pass:$keyPass" --out $apkOut (Join-Path $out 'apk\aligned.apk') 2>&1 | Out-String | Write-Output
 Write-Output "apksigner exit=$LASTEXITCODE"
+if ($LASTEXITCODE -ne 0) { exit 1 }
+
+# 终检：签名有效性 + 实际打进包里的版本号。版本一致性此前全靠人工比对
+# CHANGELOG，这里机械打出来，"manifest 忘改版本号就发版"当场现形。
+Write-Output '--- verify ---'
+& (Join-Path $bt 'apksigner.bat') verify --print-certs $apkOut 2>&1 | Out-String | Write-Output
+Write-Output "apksigner verify exit=$LASTEXITCODE"
+if ($LASTEXITCODE -ne 0) { Write-Output 'signature verification FAILED'; exit 1 }
+& (Join-Path $bt 'aapt.exe') dump badging $apkOut 2>&1 |
+    Select-String -Pattern "^package:|^application-label:" |
+    ForEach-Object { Write-Output ("  " + $_.Line) }
+Write-Output "aapt dump exit=$LASTEXITCODE"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if ($NoInstall) { Write-Output 'DONE (no install)'; exit 0 }

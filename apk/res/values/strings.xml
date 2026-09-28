@@ -23,6 +23,9 @@
     <string name="diagnostics_saved">诊断报告已写入：%1$s</string>
     <string name="diagnostics_no_target">车机上没有可接收分享的应用，报告已写入文件</string>
     <string name="touchpad_hint">仪表盘触控区\n手指落点 1:1 注入</string>
+    <!-- 触控板按 1920x720 1:1 转发坐标；仪表屏分辨率不同就整体偏移。
+         本工程只在 5.0 上实测过两块屏同为 1920x720，所以先如实告警，不擅自缩放。 -->
+    <string name="touch_resolution_mismatch">仪表屏分辨率 %1$s 与触控板 %2$s 不一致，触摸与补点坐标可能整体偏移</string>
     <string name="preview_failed">预览失败：</string>
     <string name="preview_desc">仪表盘画面预览</string>
     <string name="preview_fallback">预览已降级为抓帧</string>

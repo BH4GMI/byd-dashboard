@@ -183,15 +183,24 @@ public final class PrivilegedClient {
      * 拉起特权进程并等它回传 Binder。**立即返回**，结果走 listener（主线程）。
      *
      * <p>重复调用是安全的：已经在跑且目标屏一致就直接 onReady。
+     *
+     * <p>就绪快查（含一次同步 ping()，Binder 往返）也在 io 线程上做：调用方是
+     * UI 线程，Binder 往返不该占住主线程。
      */
     public void start(final int displayId, final Listener listener) {
-        if (binder != null && binder.isBinderAlive() && targetDisplay == displayId && ping()) {
-            listener.onReady();
-            return;
-        }
         ioExecutor.execute(new Runnable() {
             @Override
             public void run() {
+                if (binder != null && binder.isBinderAlive()
+                        && targetDisplay == displayId && ping()) {
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            listener.onReady();
+                        }
+                    });
+                    return;
+                }
                 final String reason = doStart(displayId);
                 main.post(new Runnable() {
                     @Override
@@ -262,33 +271,38 @@ public final class PrivilegedClient {
     /**
      * 停掉特权进程。**立即返回**，可以从 onPause 直接调。
      *
-     * <p>先发 SHUTDOWN 事务让它自己 destroyDisplay 后退出；再用 pkill 兜底 ——
-     * 事务可能因为句柄已失效而发不出去，而一个残留的 uid 2000 进程会一直占着
-     * 它建的 display，属于"必须清干净"的东西。pkill 是 shell IO，排到 {@link #ioExecutor}
-     * 上执行，既避开主线程网络限制，又保证它排在后续拉起之前。
+     * <p>binder 先置空：{@link #touch}/{@link #tap} 读的就是这个 volatile，
+     * "立刻断"的语义由此保证，不必等事务真的发出去。
+     *
+     * <p>SHUTDOWN 事务（对端要在事务里 destroyDisplay）与 pkill 都是会挂住调用方的
+     * 活，统一排到 {@link #ioExecutor}：既不让 UI 线程等对端，单线程排队也天然保住
+     * "先停干净、再轮到后续拉起"的顺序（见 {@link #ioExecutor} 的注释）。
+     *
+     * <p>已知代价：SHUTDOWN 排在队列已有工作之后 —— 若正有一次进行中的拉起（回环
+     * connect 最长 8s），对端会晚几秒才真正退出、多占着它建的 display 这几秒。
+     * app 侧的"立刻断"由 binder 置空保证，不受影响。
      */
     public void stop() {
-        IBinder b = binder;
+        final IBinder b = binder;
         binder = null;
         targetDisplay = -1;
-        // Binder 事务是进程内/本地调用，不走网络，就地发即可（stop 的语义是"立刻断"）。
-        if (b != null && b.isBinderAlive()) {
-            Parcel data = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
-            try {
-                data.writeInterfaceToken(PrivilegedProtocol.DESCRIPTOR);
-                b.transact(PrivilegedProtocol.CODE_SHUTDOWN, data, reply, 0);
-            } catch (Throwable ignored) {
-                // 对端已经没了，下面 pkill 兜底
-            } finally {
-                data.recycle();
-                reply.recycle();
-            }
-        }
-        unregisterReceiver();
         ioExecutor.execute(new Runnable() {
             @Override
             public void run() {
+                if (b != null && b.isBinderAlive()) {
+                    Parcel data = Parcel.obtain();
+                    Parcel reply = Parcel.obtain();
+                    try {
+                        data.writeInterfaceToken(PrivilegedProtocol.DESCRIPTOR);
+                        b.transact(PrivilegedProtocol.CODE_SHUTDOWN, data, reply, 0);
+                    } catch (Throwable ignored) {
+                        // 对端已经没了，下面 pkill 兜底
+                    } finally {
+                        data.recycle();
+                        reply.recycle();
+                    }
+                }
+                unregisterReceiver();
                 shell.run("pkill -f " + PrivilegedProtocol.NICE_NAME + " 2>/dev/null");
             }
         });
@@ -354,7 +368,12 @@ public final class PrivilegedClient {
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(PrivilegedProtocol.DESCRIPTOR);
-            b.transact(PrivilegedProtocol.CODE_CLEAR_SURFACE, data, reply, 0);
+            // 与 submitPreviewSurface 的 SET 事务定序（见 surfaceTxLock 注释）。
+            // UI 线程可能在这把锁上等一次在途的 SET 事务（一次 Binder 往返，毫秒级）
+            // ——与它本就要同步发一次事务的代价同量级，可接受。
+            synchronized (surfaceTxLock) {
+                b.transact(PrivilegedProtocol.CODE_CLEAR_SURFACE, data, reply, 0);
+            }
             return reply.readInt() != 0;
         } catch (Throwable t) {
             return false;
@@ -362,6 +381,132 @@ public final class PrivilegedClient {
             data.recycle();
             reply.recycle();
         }
+    }
+
+    /** submitPreviewSurface 的结果，一律回主线程。 */
+    public static final int SURFACE_BOUND = 0;
+    /** 通道还没就绪：不是失败，调用方等 onReady 再补交一次。 */
+    public static final int SURFACE_NOT_READY = 1;
+    /** 通道在但接不上：调用方应转降级路径。 */
+    public static final int SURFACE_REFUSED = 2;
+    /** 等到 io 线程时 Surface 已被调用方替换/收工：本次提交作废，不算失败。 */
+    public static final int SURFACE_STALE = 3;
+
+    /** submitPreviewSurface 的结果回调。**在主线程回调**。 */
+    public interface SurfaceCallback {
+        void onResult(int state);
+    }
+
+    /**
+     * 在 io 线程上、SET_SURFACE 事务发出前复核 Surface 是否仍是调用方手上最新的那块。
+     *
+     * <p>提交是异步的，排队期间调用方可能已经换了 Surface（TextureView 重建）或整个
+     * 收工（onSurfaceTextureDestroyed）。已释放的 Surface 绝不能再发给对端绑定，
+     * 所以事务发出前必须复核。
+     */
+    public interface SurfaceGuard {
+        boolean isCurrent(Surface surface);
+    }
+
+    /**
+     * SET_SURFACE 与 CLEAR_SURFACE 事务的串行锁。异步提交（io 线程）与同步清除
+     * （UI 线程，见 {@link #clearPreviewSurface}）靠它定序：对端要么看到
+     * SET→CLEAR（清除赢），要么 SET 被守卫拦下 —— 不存在 CLEAR 之后的 SET。
+     */
+    private final Object surfaceTxLock = new Object();
+
+    /** binder 是否已回传（不含活性确认）。只读本地 volatile，可安全地在 UI 线程调。 */
+    public boolean hasBinder() {
+        return binder != null;
+    }
+
+    /**
+     * {@link #setPreviewSurface} 的异步版：事务排到 {@link #ioExecutor}，结果回主线程。
+     *
+     * <p>SET_SURFACE 是同步事务，且对端要在事务里建/接 display（一串 SurfaceControl
+     * 调用）——对端卡住时调用方会被无限期挂住，所以不许在 UI 线程上直接发。
+     *
+     * <p>{@code guard} 在事务发出前于 io 线程上复核 Surface 仍是最新的：排队期间
+     * 它可能已被替换或释放（见 {@link SurfaceGuard}），过期就以 {@link #SURFACE_STALE}
+     * 收场，事务不发。
+     */
+    public void submitPreviewSurface(final Surface surface, final SurfaceGuard guard,
+            final SurfaceCallback callback) {
+        ioExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                final int state;
+                if (!isReady()) {
+                    state = SURFACE_NOT_READY;
+                } else {
+                    // 与 clearPreviewSurface 共用 surfaceTxLock 定序（见其注释）。
+                    synchronized (surfaceTxLock) {
+                        if (guard != null && !guard.isCurrent(surface)) {
+                            state = SURFACE_STALE;
+                        } else {
+                            state = setPreviewSurface(surface)
+                                    ? SURFACE_BOUND : SURFACE_REFUSED;
+                        }
+                    }
+                }
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onResult(state);
+                    }
+                });
+            }
+        });
+    }
+
+    /** launchOnDisplay 的结果回调。**在主线程回调**；error 为 null 表示已受理。 */
+    public interface LaunchListener {
+        void onResult(String error);
+    }
+
+    /**
+     * 备用启动：让特权进程用 {@code ActivityOptions.setLaunchDisplayId} 定向启动目标
+     * Activity（见 {@code PrivilegedProtocol.CODE_LAUNCH} 的注释——3.0/4.0 参考实现
+     * 在 Android 10 上实证过的通路）。事务排到 {@link #ioExecutor}，结果回主线程。
+     *
+     * <p>只应作为 {@code am start-activity --display} 失败后的兜底，不改变首选路径。
+     */
+    public void launchOnDisplay(final int display, final String packageName,
+            final String activityName, final LaunchListener listener) {
+        ioExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                final String error;
+                IBinder b = binder;
+                if (b == null) {
+                    error = "特权通道未就绪";
+                } else {
+                    String outcome = null;
+                    Parcel data = Parcel.obtain();
+                    Parcel reply = Parcel.obtain();
+                    try {
+                        data.writeInterfaceToken(PrivilegedProtocol.DESCRIPTOR);
+                        data.writeInt(display);
+                        data.writeString(packageName);
+                        data.writeString(activityName);
+                        b.transact(PrivilegedProtocol.CODE_LAUNCH, data, reply, 0);
+                        outcome = reply.readInt() != 0 ? null : reply.readString();
+                    } catch (Throwable t) {
+                        outcome = String.valueOf(t);
+                    } finally {
+                        data.recycle();
+                        reply.recycle();
+                    }
+                    error = outcome;
+                }
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        listener.onResult(error);
+                    }
+                });
+            }
+        });
     }
 
     /**

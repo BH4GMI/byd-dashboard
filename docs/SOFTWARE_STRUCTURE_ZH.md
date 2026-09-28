@@ -16,7 +16,7 @@
 | 项 | 值 |
 | --- | --- |
 | 产物 | `apk/dashcast.apk`（`apk/dashcast.apk.idsig` 是 `apksigner` 的 v4 副产物，安装用不到） |
-| 包名 / 版本 | `com.byd.dashcast` · `versionName="5.1"` · `versionCode="119"`（`AndroidManifest.xml:4-5`，**未实机验证**） |
+| 包名 / 版本 | `com.byd.dashcast` · `versionName="5.3"` · `versionCode="121"`（`AndroidManifest.xml:4-5`，**未实机验证**） |
 | SDK | `minSdk 26` / `targetSdk 32`（`:7-9`） |
 | 权限 | `INTERNET`、`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE`（`:12-16`，最后一项给守位服务）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
 | 安装方式 | 普通应用安装（`untrusted_app`，实测 `userId=10124`）；**无 root、无系统签名** |
@@ -137,7 +137,7 @@ README.md / CHANGELOG.md / LICENSE / .editorconfig / .gitattributes / .gitignore
 
 ### 4.3 方向性与通道选型
 
-两个进程之间只有两个方向：特权进程 → App（一次显式广播 `ACTION_READY` + Binder、一次死亡通知），App → 特权进程（7 个 Binder 事务，§5.1）。特权进程**不主动调 App 的任何东西**：它的 `Context` 来自 `ActivityThread.systemMain()` + `createPackageContext("com.android.shell", 0)`（`PrivilegedProcess.java:292-305`），不是从 App 借的。
+两个进程之间只有两个方向：特权进程 → App（一次显式广播 `ACTION_READY` + Binder、一次死亡通知），App → 特权进程（8 个 Binder 事务，§5.1）。特权进程**不主动调 App 的任何东西**：它的 `Context` 来自 `ActivityThread.systemMain()` + `createPackageContext("com.android.shell", 0)`（`PrivilegedProcess.java:292-305`），不是从 App 借的。
 
 **为什么是 Binder 而不是 LocalSocket**：`Surface` 是 `Parcelable`，但它内部持有 binder/native 句柄，**跨进程只能走 Binder** —— 写进 ADB 流的字节传不过去。反过来，「跑一条 shell 命令看输出」是 shell 通道的强项，Binder 通道不该为它造事务码。这个分工决定了 §5.4 的边界。
 
@@ -156,7 +156,7 @@ README.md / CHANGELOG.md / LICENSE / .editorconfig / .gitattributes / .gitignore
 | 句柄 extra key | `com.byd.dashcast.privileged.binder`（`Bundle.putBinder/getBinder`，公开 API） | `:24` |
 | 目标包名 / 主类 / 进程名 | `com.byd.dashcast` · `com.byd.dashcast.privileged.PrivilegedProcess` · `com.byd.dashcast-priv` | `:27,33,45` |
 
-**事务表**（定义 `PrivilegedProtocol.java:47-83` · 服务端 `PrivilegedProcess.java:143-229` · 客户端 `PrivilegedClient.java`）：
+**事务表**（定义 `PrivilegedProtocol.java:47-92` · 服务端 `PrivilegedProcess.java:143-255` · 客户端 `PrivilegedClient.java`）：
 
 | code | 常量 | 入参（Parcel 顺序） | 回执 | 客户端发送方式 | 服务端 |
 | --- | --- | --- | --- | --- | --- |
@@ -167,6 +167,14 @@ README.md / CHANGELOG.md / LICENSE / .editorconfig / .gitattributes / .gitignore
 | +5 | `CODE_KEY` | `int keyCode`、`int action` | `int ok` | **oneway**（`:429-446`） | `:195-205` |
 | +6 | `CODE_SHUTDOWN` | — | `int ok`（调用方不看） | 同步（`:270-295`） | `:217-225` |
 | +7 | `CODE_ATTACH_CLIENT` | `IBinder clientToken`（`writeStrongBinder`） | `int ok` | 同步（`:305-324`） | `:206-216` |
+| +8 | `CODE_LAUNCH` | `int display`、`String pkg`、`String activity` | `int ok`、`String error` | 异步（`ioExecutor`，`:474`） | `:219-247` |
+
+`CODE_LAUNCH`（5.3 新增）是 **`am start-activity --display N` 失败后的兜底**：在特权进程里用
+`ActivityOptions.setLaunchDisplayId(display)` + `Context.startActivity` 定向启动。它与 `am` 内部
+是同一条 `ActivityOptions` 通路、同一处服务端校验，而这条形式被 DiLink 3/4 的参考实现
+（编译期常量 + 服务端 `displayId > 0` 把守）在 Android 10 上实证过 —— `am` 的参数面则随系统
+构建有漂移的可能。**只在首选通路失败时才走**，且成功判据不变（仍由 `ensureOnDisplay`
+回查屏位）。
 
 触摸动作四态显式定义（`PrivilegedProtocol.java:80-83`）：`TOUCH_DOWN=0` / `UP=1` / `MOVE=2` / `CANCEL=3`，数值与 `MotionEvent.ACTION_*` 一致，但**不引用框架常量**，避免两侧耦合。多指动作（`ACTION_POINTER_DOWN/UP`）在单指协议里没有对应表示，`PrivilegedClient.normalizeAction`（`:417-427`）一律收敛成 `TOUCH_MOVE`。
 

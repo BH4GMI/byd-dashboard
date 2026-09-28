@@ -1,5 +1,7 @@
 package com.byd.dashcast.privileged;
 
+import android.app.ActivityOptions;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
@@ -211,6 +213,37 @@ public final class PrivilegedProcess {
                     }
                     if (client != null) {
                         watchClientDeath(client);
+                    }
+                    return true;
+                }
+                case PrivilegedProtocol.CODE_LAUNCH: {
+                    data.enforceInterface(PrivilegedProtocol.DESCRIPTOR);
+                    final int display = data.readInt();
+                    String pkg = data.readString();
+                    String act = data.readString();
+                    // 备用启动通路（见 PrivilegedProtocol.CODE_LAUNCH 的注释）。
+                    // 只有 am 通路失败时才会走到这里；错误原样回传，不假装成功。
+                    String error = null;
+                    try {
+                        Context c = context;
+                        if (c == null) {
+                            throw new IllegalStateException("Context 不可用");
+                        }
+                        Intent intent = new Intent();
+                        intent.setComponent(new ComponentName(pkg, act));
+                        // 从非 Activity 的 Context 启动必须 NEW_TASK。
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        ActivityOptions opts = ActivityOptions.makeBasic();
+                        opts.setLaunchDisplayId(display);
+                        c.startActivity(intent, opts.toBundle());
+                        log("LAUNCH display=" + display + " " + pkg + "/" + act + " OK");
+                    } catch (Throwable t) {
+                        error = String.valueOf(t);
+                        log("LAUNCH 失败 display=" + display + ": " + error);
+                    }
+                    if (reply != null) {
+                        reply.writeInt(error == null ? 1 : 0);
+                        reply.writeString(error);
                     }
                     return true;
                 }

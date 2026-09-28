@@ -165,13 +165,20 @@ public final class CastActivity extends Activity {
      * 本视图的 SurfaceTexture 是消费者，App 侧不参与搬运。SurfaceTexture 一旦重建
      * （界面重建、视图重新 attach）旧 Surface 就失效，所以这里要留着引用重新交一次。
      */
-    private Surface previewSurface;
+    /** volatile：io 线程的提交守卫（见 sendPreviewSurface）要与 UI 线程的替换/清除看到同一个值。 */
+    private volatile Surface previewSurface;
     private Favorites favorites;
 
     /** 代理补齐只做一次；界面可能被反复 resume，重复提交会重复连 adbd。 */
     private boolean agentBringUpStarted;
     /** 代理补齐还没出结果——状态行据此区分「正在拉起」与「拉起失败」。 */
     private boolean agentBringUpRunning;
+
+    /**
+     * 仪表屏分辨率与触控板不一致的告警只弹一次（{@link #checkProjectionResolution}）。
+     * 精化会随通道重建反复跑，每轮都弹会变成噪音。
+     */
+    private boolean resolutionWarned;
 
     /** 代理下发的全量清单。 */
     private final List<AppRepo.Entry> allApps = new ArrayList<AppRepo.Entry>();
@@ -228,34 +235,66 @@ public final class CastActivity extends Activity {
     private Handler heartbeatHandler;
 
     /**
+     * 心跳代次。onPause 递增它，在途与排队中的心跳就全部作废：
+     * 只靠 removeCallbacks 拦不住「正跑到一半的心跳在 remove 之后又把自己挂回去」，
+     * 那条漏网路径会让界面在后台期间每 2s 继续巡检（shell IO），直到 onDestroy 才停。
+     */
+    private final java.util.concurrent.atomic.AtomicLong heartbeatEpoch =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
      * 触摸转发线程。**必须单线程**：DOWN/MOVE/UP 依赖先后顺序，
      * 用线程池并发下发会让手势乱序、彻底失效。
      */
     private final java.util.concurrent.ExecutorService touchExecutor =
             java.util.concurrent.Executors.newSingleThreadExecutor();
-    private final Runnable heartbeat = new Runnable() {
-        @Override
-        public void run() {
-            // ping() 现在兼任看门巡检：发现目标被应用自己拽回主屏就搬回来。
-            InjectClient.WatchState state = injector.ping();
-            // 预览通道也要巡检：它死了画面会静止在最后一帧，不巡检就是一个哑掉的黑屏。
-            checkPreviewAlive();
-            // 只在"搬回次数"变化时刷状态栏，避免心跳每 2 秒把用户刚看到的提示冲掉。
-            if (state != null && (watchState == null || state.moves != watchState.moves)) {
-                watchState = state;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        refreshStatus();
-                    }
-                });
-            }
-            Handler h = heartbeatHandler;
-            if (h != null) {
-                h.postDelayed(this, HEARTBEAT_INTERVAL_MS);
-            }
+
+    /**
+     * 挂一轮心跳：只挂属于指定代次的那一份，续挂也只续同一个代次。
+     *
+     * <p>代次核对共三道（开头、续挂前、续挂后）：onPause 的"递增 + 清队列"与心跳线程的
+     * 自续挂是并发的，任何一道输了都由后到的一方负责收尾，保证作废后队列里不残留心跳。
+     */
+    private void postHeartbeat(long delayMs, final long epoch) {
+        final Handler h = heartbeatHandler;
+        if (h == null) {
+            return;
         }
-    };
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (heartbeatEpoch.get() != epoch) {
+                    return; // 已被作废：不干活，也不再续挂
+                }
+                heartbeatTick();
+                Handler again = heartbeatHandler;
+                if (again == null || heartbeatEpoch.get() != epoch) {
+                    return;
+                }
+                again.postDelayed(this, HEARTBEAT_INTERVAL_MS);
+                if (heartbeatEpoch.get() != epoch) {
+                    again.removeCallbacks(this);
+                }
+            }
+        }, delayMs);
+    }
+
+    private void heartbeatTick() {
+        // ping() 现在兼任看门巡检：发现目标被应用自己拽回主屏就搬回来。
+        InjectClient.WatchState state = injector.ping();
+        // 预览通道也要巡检：它死了画面会静止在最后一帧，不巡检就是一个哑掉的黑屏。
+        checkPreviewAlive();
+        // 只在"搬回次数"变化时刷状态栏，避免心跳每 2 秒把用户刚看到的提示冲掉。
+        if (state != null && (watchState == null || state.moves != watchState.moves)) {
+            watchState = state;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    refreshStatus();
+                }
+            });
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -520,6 +559,37 @@ public final class CastActivity extends Activity {
         } catch (Throwable t) {
             AppLog.w(TAG, "daemon 屏表精化失败，保留应用侧判定：" + t);
         }
+        checkProjectionResolution();
+    }
+
+    /**
+     * 核对"触控板 1:1 转发"这个假设（见 {@link #CLUSTER_WIDTH}/{@link #CLUSTER_HEIGHT}
+     * 与触摸转发的注释）：daemon 屏表读到的仪表屏分辨率与触控板不一致时，坐标会整体偏移。
+     *
+     * <p>参考实现（winmgr v1.2）为此专门做了校准界面 —— 说明"目标屏分辨率与触控板不同"
+     * 是真实存在的失败类。本工程只在 5.0 上实测过两块屏**同为 1920x720**（缩放恒等），
+     * 4.0 的真实分辨率未知，所以这里**只告警、不擅自缩放**：先让事实可见，
+     * 等实车数据确认后再谈按屏缩放。分辨率未知（应用侧那一趟）时什么都不说。
+     */
+    private void checkProjectionResolution() {
+        final String res = session.projectionResolution();
+        final String pad = CLUSTER_WIDTH + "x" + CLUSTER_HEIGHT;
+        if (res == null || res.equals(pad)) {
+            return;
+        }
+        AppLog.w(TAG, "仪表屏分辨率 " + res + " 与触控板 " + pad
+                + " 不一致：触摸与补点坐标可能整体偏移");
+        if (resolutionWarned) {
+            return;
+        }
+        resolutionWarned = true;
+        final String text = getString(R.string.touch_resolution_mismatch, res, pad);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                toast(text);
+            }
+        });
     }
 
     /**
@@ -858,23 +928,96 @@ public final class CastActivity extends Activity {
                                     settleThenTap(target, display, onDone, SETTLE_AFTER_MOVE_MS);
                                     return;
                                 }
-                                final String text = getString(R.string.cast_failed) + message;
-                                runOnUiThread(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        setStatus(text);
-                                        toast(text);
-                                        if (onDone != null) {
-                                            onDone.run();
-                                        }
-                                    }
-                                });
+                                // am 通路失败：还剩最后一道启动手段 —— 特权进程里的
+                                // ActivityOptions.setLaunchDisplayId（见 launchViaPrivileged）。
+                                launchViaPrivileged(target, display, onDone, message);
                             }
                         });
             }
         }, "dashcast-quick");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    /**
+     * am 通路失败后的备用启动：特权进程内 {@code ActivityOptions.setLaunchDisplayId}
+     * 定向启动（uid 2000 + 公开 Java API，3.0/4.0 参考实现实证过这条通路；
+     * 与 am 内部是同一条 ActivityOptions 通路、同一处服务端校验）。
+     *
+     * <p>存在的理由：{@code am} 的参数面随系统构建有漂移可能，个别 Android 10 构建
+     * 上 {@code --display} 是否可用无法离线证实；任务建不起来时 ensureOnDisplay 也
+     * 无从归位，这条就是兜底。**只在 am 失败后走，不改变首选路径。**
+     *
+     * <p>Binder 已在就直接用；不在才 start() 一个 —— 绝不重启已运行的特权进程：
+     * 5.x 上预览进程的目标屏（主投影屏）与投屏槽是两块屏，为兜底而重启会把预览
+     * 拉到错的屏上。首投失败时本来就没有预览进程，新起一个无副作用。
+     */
+    private void launchViaPrivileged(final AutoCast.Target target, final int display,
+            final Runnable onDone, final String amError) {
+        AppLog.w(TAG, "am 启动失败，改走特权进程备用通路：" + amError);
+        if (privileged == null) {
+            reportCastFailure(amError, null, onDone);
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                setStatus(getString(R.string.cast_failed) + amError + "；尝试备用启动通道…");
+            }
+        });
+        if (privileged.hasBinder()) {
+            launchViaBinder(target, display, onDone, amError);
+            return;
+        }
+        privileged.start(display, new PrivilegedClient.Listener() {
+            @Override
+            public void onReady() {
+                launchViaBinder(target, display, onDone, amError);
+            }
+
+            @Override
+            public void onFailed(String reason) {
+                reportCastFailure(amError, "备用通道不可用：" + reason, onDone);
+            }
+        });
+    }
+
+    private void launchViaBinder(final AutoCast.Target target, final int display,
+            final Runnable onDone, final String amError) {
+        privileged.launchOnDisplay(display, target.packageName, target.activityName,
+                new PrivilegedClient.LaunchListener() {
+                    @Override
+                    public void onResult(final String error) {
+                        if (error == null) {
+                            // 备用通路受理。成不成立仍由 settleThenTap 里的闭环归位判定，
+                            // 与 am 通路成功的判据完全一致 —— 不因为换了通路就降低标准。
+                            quickCastOk = true;
+                            settleThenTap(target, display, onDone, SETTLE_AFTER_MOVE_MS);
+                            return;
+                        }
+                        reportCastFailure(amError, error, onDone);
+                    }
+                });
+    }
+
+    /** 汇报投屏失败：am 与备用通路（若有）的错误一起给用户，不吞任何一方。 */
+    private void reportCastFailure(final String amError, final String fallbackError,
+            final Runnable onDone) {
+        String text = getString(R.string.cast_failed) + amError;
+        if (fallbackError != null) {
+            text += "；备用启动也失败：" + fallbackError;
+        }
+        final String fail = text;
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                setStatus(fail);
+                toast(fail);
+                if (onDone != null) {
+                    onDone.run();
+                }
+            }
+        });
     }
 
     /**
@@ -1181,6 +1324,12 @@ public final class CastActivity extends Activity {
      * "画面接好了但内容没变"和"对端已经死了、画面静止在最后一帧"。
      */
     private boolean previewBound;
+    /**
+     * 一轮"把 Surface 交给特权进程"在途。与 {@link #previewBound} 一起挡重复提交：
+     * 重复的 SET_SURFACE 会让对端拆了 display 再建，白闪一下，而 onReady 与
+     * onSurfaceTextureAvailable 两条路都会触发提交。只在 UI 线程读写。
+     */
+    private boolean previewSurfaceInFlight;
     /** 走到降级路径的原因，展示在状态行里。**不允许静默降级**。 */
     private String fallbackReason = "";
 
@@ -1281,39 +1430,95 @@ public final class CastActivity extends Activity {
      *
      * <p>"通道还没就绪"不算失败：SurfaceTexture 通常比特权进程先好，
      * 那种情况什么都不做，等 {@code onReady} 里补交一次。
+     *
+     * <p>SET_SURFACE 是同步 Binder 事务，对端要在事务里建/接 display（一串
+     * SurfaceControl 调用）——对端卡住时调用方会被挂住，所以这里只把 Surface 提交到
+     * 特权客户端的 io 线程（见 {@code PrivilegedClient#submitPreviewSurface}），
+     * 结果回主线程后再翻状态标志。
      */
     private void sendPreviewSurface() {
-        Surface surface = previewSurface;
+        final Surface surface = previewSurface;
         if (surface == null || previewMode != PreviewMode.PASSTHROUGH || privileged == null) {
             return;
         }
-        if (previewBound) {
-            // 同一块 Surface 已经交过了。重复交会让对端 destroyDisplay 再 createDisplay，
-            // 白闪一下 —— 而 onReady 与 onSurfaceTextureAvailable 的先后顺序是不确定的，
-            // 两条路都会走到这里。
+        if (previewBound || previewSurfaceInFlight) {
+            // 同一块 Surface 已经交过、或已有一轮在途。onReady 与
+            // onSurfaceTextureAvailable 的先后顺序不确定，两条路都会走到这里。
             return;
         }
-        if (!privileged.isReady()) {
+        if (!privileged.hasBinder()) {
             Log.i(TAG, "预览 Surface 已备好，等特权通道就绪后再交");
             return;
         }
-        if (privileged.setPreviewSurface(surface)) {
-            previewBound = true;
-            Log.i(TAG, "仪表屏画面已接到预览 Surface");
-            return;
-        }
-        // 通道在、但接不上（跨进程传 Surface 被拒 / 对端已死）—— 退回抓帧。
-        Log.w(TAG, "直通预览接屏失败，转抓帧降级");
-        enterFallback(getString(R.string.preview_fallback_no_surface));
+        previewSurfaceInFlight = true;
+        privileged.submitPreviewSurface(surface, new PrivilegedClient.SurfaceGuard() {
+            @Override
+            public boolean isCurrent(Surface s) {
+                // attach/detach 都会替换或清掉 previewSurface（都在 UI 线程）。
+                // 不等于提交时的那块，就说明它已被释放或收工，事务不能再发。
+                return previewSurface == s;
+            }
+        }, new PrivilegedClient.SurfaceCallback() {
+            @Override
+            public void onResult(final int state) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        previewSurfaceInFlight = false;
+                        if (!previewStarted || previewMode != PreviewMode.PASSTHROUGH) {
+                            // 等结果期间预览已收工（onPause / 停预览）：结果不再有意义。
+                            // 收尾的 stop 已排在同一条 io 线程上，对端会被正确拆掉。
+                            return;
+                        }
+                        if (state == PrivilegedClient.SURFACE_BOUND && previewSurface != surface) {
+                            // 守卫通过后、事务完成前被替换：绑上的是已释放的旧块，
+                            // 回调侧等价于 STALE —— 改交当前这块。
+                            Log.i(TAG, "绑上的 Surface 已被替换，改交最新的一块");
+                            sendPreviewSurface();
+                            return;
+                        }
+                        if (state == PrivilegedClient.SURFACE_STALE) {
+                            // 等结果期间 Surface 被替换/收工：本次提交作废，不算失败不降级。
+                            // 若是被替换（TextureView 重建），当时的新提交被 inFlight 挡过
+                            // 一次，这里补交 —— inFlight 已复位，previewSurface 为空则自然空跑。
+                            Log.i(TAG, "预览 Surface 已被替换，改交最新的一块");
+                            sendPreviewSurface();
+                            return;
+                        }
+                        if (state == PrivilegedClient.SURFACE_BOUND) {
+                            previewBound = true;
+                            Log.i(TAG, "仪表盘画面已接到预览 Surface");
+                            return;
+                        }
+                        if (state == PrivilegedClient.SURFACE_NOT_READY) {
+                            Log.i(TAG, "预览 Surface 已备好，等特权通道就绪后再交");
+                            return;
+                        }
+                        // 通道在、但接不上（跨进程传 Surface 被拒 / 对端已死）—— 退回抓帧。
+                        Log.w(TAG, "直通预览接屏失败，转抓帧降级");
+                        enterFallback(getString(R.string.preview_fallback_no_surface));
+                    }
+                });
+            }
+        });
     }
 
     /** 通知特权进程松开画面，并放掉本地 Surface 引用。 */
     private void detachPreviewSurface() {
         previewBound = false;
+        // **先断引用，再发 CLEAR，最后才 release**。次序是死 Surface 不被绑回对端的关键：
+        // 1) 引用一断，io 线程上排队中的提交就被守卫判为过期（SURFACE_STALE），不再发；
+        // 2) CLEAR 与在途的 SET 由 PrivilegedClient 的 surfaceTxLock 定序，谁先到
+        //    对端都是"清除最终生效"；
+        // 3) release 必须等 CLEAR 返回 —— 对端已被告知松手，本地句柄才允许作废。
+        Surface surface = previewSurface;
+        previewSurface = null;
         if (privileged != null) {
             privileged.clearPreviewSurface();
         }
-        releasePreviewSurface();
+        if (surface != null) {
+            surface.release();
+        }
     }
 
     /** 只放掉本地引用，不动特权进程。 */
@@ -1540,8 +1745,10 @@ public final class CastActivity extends Activity {
             heartbeatThread.start();
             heartbeatHandler = new Handler(heartbeatThread.getLooper());
         }
-        heartbeatHandler.removeCallbacks(heartbeat);
-        heartbeatHandler.post(heartbeat);
+        // 新代次 + 清队列：作废一切残留（正常路径 onPause 已作废过，这里是双保险），
+        // 再挂上新的一份。
+        heartbeatHandler.removeCallbacksAndMessages(null);
+        postHeartbeat(0, heartbeatEpoch.incrementAndGet());
         // 镜像跟着可见性走：前台才建，后台就拆，与心跳的生命周期保持一致，
         // 否则会出现"心跳停了→代理以为客户端走了→重建镜像"的循环。
         startPreviewIfReady();
@@ -1551,7 +1758,10 @@ public final class CastActivity extends Activity {
     @Override
     protected void onPause() {
         if (heartbeatHandler != null) {
-            heartbeatHandler.removeCallbacks(heartbeat);
+            // 递增代次作废在途心跳（removeCallbacks 拦不到正跑到一半的那次自续挂），
+            // 再清一次队列兜底。
+            heartbeatEpoch.incrementAndGet();
+            heartbeatHandler.removeCallbacksAndMessages(null);
         }
         // 界面不再可见就松开看门 —— 这是"用户随时能夺回控制权"的第一道保证。
         // 用户在主屏点该应用图标、或从最近任务拉它时，本界面必然 pause；
@@ -1638,12 +1848,20 @@ public final class CastActivity extends Activity {
 
     // ---- 动作 --------------------------------------------------------------
 
-    private void sendKey(int keyCode) {
+    private void sendKey(final int keyCode) {
         if (!session.isActive()) {
             setStatus(noDisplayText());
             return;
         }
-        injector.key(keyCode);
+        // key 与触摸一样是一条 shell 命令（socket IO），排到同一条单线程队列：
+        // 从按钮回调（UI 线程）直发会抛 NetworkOnMainThreadException（实测结论，
+        // 见 onTouch 转发处的注释）。
+        touchExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                injector.key(keyCode);
+            }
+        });
     }
 
     private void setStatus(String text) {

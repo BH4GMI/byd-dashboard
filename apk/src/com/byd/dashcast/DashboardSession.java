@@ -127,6 +127,13 @@ public final class DashboardSession {
      * 槽位是"往哪里投"，这块是"投完在哪儿看得见"。找不到为 -1。
      */
     private int projectionDisplayId = -1;
+    /**
+     * 仪表屏的 {@code real W x H}（如 {@code "1920x720"}），只有 daemon 那一趟读得到，
+     * 未知为 null。**不参与判定**：界面用它核对"触控板 1:1"这个假设 —— 分辨率不一致时
+     * 触摸坐标会整体偏移（参考 v1.2 为此专门做了校准界面），所以必须把事实告诉用户，
+     * 而不是默默按 1920x720 转发。
+     */
+    private String projectionResolution;
     /** 主投影屏是否取自实测常量（而非枚举命中）。诊断用。 */
     private boolean projectionFromConstant;
 
@@ -254,6 +261,12 @@ public final class DashboardSession {
             projectionDisplayId = PROJECTION_DISPLAY_FALLBACK_ID;
             projectionFromConstant = true;
         }
+        // 分辨率只用 daemon 屏表里的真值（应用侧枚举拿不到）。读到才更新，
+        // 免得后续用应用侧屏表重算时把已有事实抹掉。
+        String resolution = table.resolutionOf(projectionDisplayId);
+        if (resolution != null) {
+            projectionResolution = resolution;
+        }
 
         // 平台事实**只在失败时**出。正常路径靠「通路=」已能说明用了哪套机制，把机型信息
         // 混进每一条判定日志只会淹没现场；需要时用界面的「诊断」按钮按需导出完整现场。
@@ -261,6 +274,7 @@ public final class DashboardSession {
                 + " ｜ 投屏目标=" + displayId
                 + " 仪表屏=" + projectionDisplayId
                 + (projectionFromConstant ? "（实测常量）" : "（枚举命中）")
+                + (projectionResolution == null ? "" : " 分辨率=" + projectionResolution)
                 + (next.isActive() ? "" : " ｜ 平台: " + platformFacts));
         if (!next.isActive()) {
             AppLog.w(TAG, "本机未适配：" + unsupportedReason + "；不做任何猜测");
@@ -299,6 +313,16 @@ public final class DashboardSession {
     /** 主投影屏是否取自实测常量（而非枚举命中）。诊断用。 */
     public boolean projectionFromConstant() {
         return projectionFromConstant;
+    }
+
+    /**
+     * 仪表屏的 {@code real W x H}；未知（应用侧枚举那一趟）为 null。
+     *
+     * <p>界面用它核对"触控板 1:1 转发"这个假设：分辨率与 {@code 1920x720} 不一致时
+     * 触摸坐标会整体偏移，必须明确告诉用户，而不是默默转发。
+     */
+    public String projectionResolution() {
+        return projectionResolution;
     }
 
     /**

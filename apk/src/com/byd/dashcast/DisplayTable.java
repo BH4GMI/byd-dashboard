@@ -55,12 +55,22 @@ public final class DisplayTable {
         public final int ownerUid;
         /** dump 里的 FLAG_* 原文，仅诊断用。 */
         public final String flags;
+        /**
+         * dump 里同一行的 {@code real W x H}（如 {@code "1920x720"}）；应用侧枚举拿不到，
+         * 记 null。**不参与判定**，只供上层核对触控板假设（见 CastActivity 的分辨率告警）。
+         */
+        public final String resolution;
 
         Entry(int id, String name, int ownerUid, String flags) {
+            this(id, name, ownerUid, flags, null);
+        }
+
+        Entry(int id, String name, int ownerUid, String flags, String resolution) {
             this.id = id;
             this.name = name;
             this.ownerUid = ownerUid;
             this.flags = flags;
+            this.resolution = resolution;
         }
 
         @Override
@@ -144,6 +154,9 @@ public final class DisplayTable {
     /** 同一行里的 FLAG_* 列表，仅用于诊断。 */
     private static final Pattern FLAG = Pattern.compile("\\bFLAG_[A-Z_]+\\b");
 
+    /** 同一行里的 {@code real W x H}（DisplayInfo 的实际分辨率）。 */
+    private static final Pattern REAL_SIZE = Pattern.compile("\\breal (\\d+) x (\\d+)");
+
     private final List<Entry> entries = new ArrayList<Entry>();
 
     public List<Entry> entries() {
@@ -151,6 +164,15 @@ public final class DisplayTable {
     }
 
     public void add(int id, String name, int ownerUid, String flags) {
+        add(id, name, ownerUid, flags, null);
+    }
+
+    /**
+     * @param resolution dump 里同一行的 {@code real W x H}（如 {@code "1920x720"}）；
+     *                   应用侧枚举拿不到时传 null。**不参与判定**，只供上层核对
+     *                   触控板的分辨率假设。
+     */
+    public void add(int id, String name, int ownerUid, String flags, String resolution) {
         if (name == null) {
             return;
         }
@@ -160,7 +182,7 @@ public final class DisplayTable {
                 return;
             }
         }
-        entries.add(new Entry(id, name, ownerUid, flags == null ? "" : flags));
+        entries.add(new Entry(id, name, ownerUid, flags == null ? "" : flags, resolution));
     }
 
     /**
@@ -199,9 +221,26 @@ public final class DisplayTable {
                 }
                 flags.append(f.group());
             }
-            table.add(Integer.parseInt(m.group(2)), m.group(1), ownerUid, flags.toString());
+            String resolution = null;
+            Matcher r = REAL_SIZE.matcher(line);
+            if (r.find()) {
+                resolution = r.group(1) + "x" + r.group(2);
+            }
+            table.add(Integer.parseInt(m.group(2)), m.group(1), ownerUid,
+                    flags.toString(), resolution);
         }
         return table;
+    }
+
+    /** 指定 display 的 {@code real W x H}；没这份信息（应用侧枚举）返回 null。 */
+    public String resolutionOf(int displayId) {
+        for (int i = 0; i < entries.size(); i++) {
+            Entry e = entries.get(i);
+            if (e.id == displayId) {
+                return e.resolution;
+            }
+        }
+        return null;
     }
 
     /**

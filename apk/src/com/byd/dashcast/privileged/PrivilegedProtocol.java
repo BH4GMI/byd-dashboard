@@ -75,6 +75,20 @@ public final class PrivilegedProtocol {
      */
     public static final int CODE_ATTACH_CLIENT = 7;
 
+    /**
+     * {@code [int display, String pkg, String activity] -> reply [int ok, String error]}。
+     * 备用启动通路：在特权进程里用 {@code ActivityOptions.setLaunchDisplayId} 定向
+     * 启动目标 Activity（uid 2000 + 公开 Java API）。
+     *
+     * <p>存在的理由：App 侧常规启动走 {@code am start-activity --display N}，而
+     * {@code am} 的参数面随系统构建有漂移的可能（个别 Android 10 构建上
+     * {@code --display} 是否可用无法离线证实）。Java API 与 {@code am} 内部是同一条
+     * {@code ActivityOptions} 通路、同一处服务端校验，且这种形式被 3.0/4.0 的
+     * 参考实现（编译期常量 + 服务端 {@code if (displayId > 0)} 把守）在
+     * Android 10 上实证过。只在 {@code am} 通路失败时才走这里，不改变首选路径。
+     */
+    public static final int CODE_LAUNCH = 8;
+
     // ---- 触摸 action（与 MotionEvent 的 ACTION_* 对齐，但显式定义避免两侧耦合到框架常量）----
 
     public static final int TOUCH_DOWN = 0;

@@ -286,21 +286,31 @@ public final class ShellChannel {
     /**
      * 关掉一条预览连接。
      *
-     * <p>**置空在锁内、{@code close} 在锁外**：抓帧线程可能正持着这把锁读一帧（最长一个
-     * screencap 超时），在锁内 close 会把调用方（通常是 UI 线程的 onPause）卡住；
-     * 而 {@code Socket.close()} 本身立即返回，不需要靠锁保护。
+     * <p>**先在锁外关 socket，再进锁置空**：抓帧线程可能正持着这把锁读一帧
+     * （最长一个 screencap 超时），先取锁会把调用方（通常是 UI 线程的 onPause）
+     * 卡住一帧甚至更久；而 {@code Socket.close()} 线程安全、立即返回，还会让阻塞在
+     * 它上面的读立刻抛错 —— 持锁线程因此马上返回、自然放锁。关过的 socket 再关一次
+     * 幂等，所以锁内补关也安全。
+     *
+     * <p>锁外那一次数组读**故意**不加锁：读到旧引用最坏是多关一个已关闭的连接，
+     * 当前引用由锁内的补关收尾。残余的等待窗口只剩"别的线程正持锁**建连**"
+     * （回环 connect，正常毫秒级）这一种，比原来"等一帧读完"（4s）小一个量级。
      */
     private void closePreviewChannel(int channel) {
-        AdbClient c;
+        closePreviewSocketQuietly(previewAdb[channel]);
         synchronized (previewLocks[channel]) {
-            c = previewAdb[channel];
+            // 锁外若有人刚重建了连接（本代预览线程收尾前的重连），既然收工就一并关掉。
+            closePreviewSocketQuietly(previewAdb[channel]);
             previewAdb[channel] = null;
         }
+    }
+
+    private static void closePreviewSocketQuietly(AdbClient c) {
         if (c != null) {
             try {
                 c.close();
-            } catch (Throwable t) {
-                Log.w(TAG, "关闭预览通道 " + channel + " 失败", t);
+            } catch (Throwable ignored) {
+                // 已经坏了，关不掉也无所谓
             }
         }
     }
