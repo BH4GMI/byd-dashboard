@@ -122,6 +122,15 @@ public final class DisplayTable {
      */
     private static final String DIRECT_PREFIX = "fission_bg_xdjaVirtualSurface";
 
+    /**
+     * 默认屏（主屏）的 displayId。
+     *
+     * <p>{@code DisplayTable} 刻意不引任何 Android API（见类注释），所以这里是字面量，
+     * 而不是 {@code Display.DEFAULT_DISPLAY}。它的唯一用途是在 {@link #resolve()} 的
+     * 结构判据里把主屏排除掉 —— 主屏永远不该成为投屏目标。
+     */
+    private static final int DEFAULT_DISPLAY_ID = 0;
+
     /** 车机系统服务（容器服务）的 uid。归属校验用它。 */
     private static final int SYSTEM_UID = 1000;
 
@@ -208,6 +217,8 @@ public final class DisplayTable {
         int slotFirst = -1;
         int mirror = -1;
         int direct = -1;
+        // 不属于任何已知族、归属可接受的副屏；结构判据的候选集（见方法末尾）。
+        List<Entry> unknown = new ArrayList<Entry>();
         List<String> rejected = new ArrayList<String>();
 
         for (int i = 0; i < entries.size(); i++) {
@@ -240,6 +251,15 @@ public final class DisplayTable {
                 if (direct < 0) {
                     direct = e.id;
                 }
+            } else if (e.id != DEFAULT_DISPLAY_ID) {
+                // 不认识这个名字。**主屏必须排除** —— parse() 会把 mBaseDisplayInfo
+                // 里的主屏也收进屏表，不排除的话下面的结构判据会在每一台车上
+                // 命中 display 0，把用户的画面投到主屏上。
+                if (foreign) {
+                    rejected.add(e + " 非系统归属");
+                } else {
+                    unknown.add(e);
+                }
             }
         }
 
@@ -261,9 +281,28 @@ public final class DisplayTable {
                     "通路=直接投仪表屏（DiLink 3/4）仪表屏=" + direct
                             + " 可见副屏=" + seen + tail);
         }
+
+        // 结构判据：已知三族都没命中时，看本机到底有几块**不属于任何已知族**的副屏。
+        //
+        //   恰好一块 → 这台车只有"主屏 + 一块副屏"这个拓扑，那它就是仪表屏，走 DIRECT。
+        //   多于一块 → 拓扑有歧义（可能还有后排屏、其它投影屏），保持未适配，
+        //              **绝不从多块里挑一块** —— 挑错就是把用户的画面送到别处。
+        //
+        // 这条判据只用本机 dumpsys display 的实际结果，不依赖任何外部软件的常量、
+        // 也不看版本号，所以对没见过的代次（3.0 / 4.0 / 未来的 6.0）同样成立。
+        // 5.x 上候选必然为空（display 2/3/4 都属已知族，第三方残留屏归属 uid 2000 被排除），
+        // 且槽位族先命中，故 5.x 行为逐项不变。
+        if (unknown.size() == 1) {
+            Entry only = unknown.get(0);
+            return new Pick(Path.DIRECT, only.id, only.id,
+                    "通路=直接投仪表屏（本机唯一一块非已知族副屏：" + only
+                            + "）仪表屏=" + only.id + " 可见副屏=" + seen + tail);
+        }
+
         return new Pick(Path.UNSUPPORTED, -1, mirror,
                 "两种拓扑都没命中（期望槽位族 " + SLOT_PREFIX + "* 或仪表屏族 " + DIRECT_PREFIX
-                        + "*），可见副屏=" + seen + tail);
+                        + "*；非已知族副屏 " + unknown.size()
+                        + " 块，需恰好 1 块才能按结构判据投屏），可见副屏=" + seen + tail);
     }
 
     /**

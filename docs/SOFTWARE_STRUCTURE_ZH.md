@@ -16,7 +16,7 @@
 | 项 | 值 |
 | --- | --- |
 | 产物 | `apk/dashcast.apk`（`apk/dashcast.apk.idsig` 是 `apksigner` 的 v4 副产物，安装用不到） |
-| 包名 / 版本 | `com.byd.dashcast` · `versionName="5.0"` · `versionCode="118"`（`AndroidManifest.xml:4-5`，**预发布，未实机验证**） |
+| 包名 / 版本 | `com.byd.dashcast` · `versionName="5.1"` · `versionCode="119"`（`AndroidManifest.xml:4-5`，**未实机验证**） |
 | SDK | `minSdk 26` / `targetSdk 32`（`:7-9`） |
 | 权限 | `INTERNET`、`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE`（`:12-16`，最后一项给守位服务）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
 | 安装方式 | 普通应用安装（`untrusted_app`，实测 `userId=10124`）；**无 root、无系统签名** |

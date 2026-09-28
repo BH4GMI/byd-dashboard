@@ -47,10 +47,19 @@ import android.view.Display;
  * <h3>2026-09-28 加固：认不出投屏槽位就不再猜</h3>
  *
  * 旧实现在枚举落空时按写死的 {@code displayId=3} 硬投。本机恰好是 3，但没有任何证据
- * 表明别的 DiLink 车型也是 —— 实测 DiLink 4.0 的仪表是 display 1、名字
- * {@code fission_bg_xdjaVirtualSurface}、owner {@code com.xdja.containerservice}，
+ * 表明别的 DiLink 车型也是 —— 公开取证记录显示 DiLink 4.0 的仪表屏是 display 1、
+ * 名字 {@code fission_bg_xdjaVirtualSurface}、owner {@code com.xdja.containerservice}，
  * 连"共享槽位"这个概念都不存在。赌错的代价是把用户的画面投到一块没人知道是什么的屏上
  * （后排屏、别人的投屏……），比"如实说不支持"糟糕得多。
+ *
+ * <p><b>这三个值的来源必须说清（此处曾误写为"实测"，已更正）</b>：
+ * displayId 1 / 族名 / owner 来自对 DiLink 4.0 车的**公开取证记录**，以及同族 3.0/4.0
+ * 发行版里 {@code DISPLAY_SECONDARY_ID} 的**编译期常量**（见
+ * {@code docs/REFERENCE_APPS_ZH.md}）——**不是本工程的实机实测**，本工程只有一台
+ * DiLink 5.0。把它写成"实测"等于用社区推断冒充本工程事实。
+ *
+ * <p>好在**判据本身不依赖这些值**：命中靠 {@link DisplayTable} 的族名匹配与结构判据，
+ * 两者都以**本机屏表**为准；这些值只影响"我们预期它长什么样"，不影响"它实际长什么样就怎么判"。
  *
  * <p>现在：认不出来 → {@code displayId = -1}，由 {@link #unsupportedReason()} 给出
  * 可核对的原因（含应用侧实际枚举到的每一块副屏），UI 据此外显。
@@ -133,7 +142,8 @@ public final class DashboardSession {
      * 画面会被车机导航盖住。
      *
      * <p>认不出来时**不猜**：旧实现会退到写死的 {@code displayId=3}，那等于赌"一台没见过的
-     * 车和我们这台一样"。实测 DiLink 4.0 的仪表是 display 1、名字 {@code fission_bg_xdjaVirtualSurface}，
+     * 车和我们这台一样"。公开取证记录显示 DiLink 4.0 的仪表屏是 display 1、名字
+     * {@code fission_bg_xdjaVirtualSurface}（来源见类注释，**非本工程实测**），
      * 连"槽位"这个概念都不存在 —— 赌错的代价是把用户的画面投到一块没人知道是什么的屏上。
      */
     public int resolve() {
