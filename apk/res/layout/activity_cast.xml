@@ -118,6 +118,16 @@
             android:layout_height="wrap_content"
             android:text="@string/app_list" />
 
+        <!--
+          诊断导出：未适配 / 出问题时，用户不必连 adb、不必找日志路径，点一下就能把现场发出来。
+          位置放在操作类按钮之后、窗口控制按钮之前 —— 它不是操作仪表盘的按钮。
+        -->
+        <Button
+            android:id="@+id/btnDiagnostics"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/diagnostics" />
+
         <Button
             android:id="@+id/btnBack"
             android:layout_width="wrap_content"

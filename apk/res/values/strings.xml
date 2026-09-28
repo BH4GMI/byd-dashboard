@@ -18,6 +18,10 @@
     <!-- 认不出投屏槽位时的终态文案：必须区别于一般性的"找不到"，用户才知道这可能是机型不适配，
          而不是自己没操作对。详细原因（应用侧实际枚举到的副屏）落在 dashcast.log 里。 -->
     <string name="status_unsupported">本机未适配：认不出投屏槽位，未做任何猜测</string>
+    <string name="diagnostics">诊断</string>
+    <string name="diagnostics_share">导出诊断报告</string>
+    <string name="diagnostics_saved">诊断报告已写入：%1$s</string>
+    <string name="diagnostics_no_target">车机上没有可接收分享的应用，报告已写入文件</string>
     <string name="touchpad_hint">仪表盘触控区\n手指落点 1:1 注入</string>
     <string name="preview_failed">预览失败：</string>
     <string name="preview_desc">仪表盘画面预览</string>

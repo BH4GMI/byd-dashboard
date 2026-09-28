@@ -16,7 +16,7 @@
 | 项 | 值 |
 | --- | --- |
 | 产物 | `apk/dashcast.apk`（`apk/dashcast.apk.idsig` 是 `apksigner` 的 v4 副产物，安装用不到） |
-| 包名 / 版本 | `com.byd.dashcast` · `versionName="4.4-diagnostics"` · `versionCode="117"`（`AndroidManifest.xml:4-5`，**预发布，未实机验证**） |
+| 包名 / 版本 | `com.byd.dashcast` · `versionName="5.0"` · `versionCode="118"`（`AndroidManifest.xml:4-5`，**预发布，未实机验证**） |
 | SDK | `minSdk 26` / `targetSdk 32`（`:7-9`） |
 | 权限 | `INTERNET`、`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE`（`:12-16`，最后一项给守位服务）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
 | 安装方式 | 普通应用安装（`untrusted_app`，实测 `userId=10124`）；**无 root、无系统签名** |
@@ -227,7 +227,8 @@ APK 路径取自 `ApplicationInfo.sourceDir`（`:498-504`），**不去解析 `p
 | `GuideActivity` | ADB 授权引导，兼「快速通道」：已就绪时几百毫秒内直接转走 | `GuideActivity.java:59-79` |
 | `DashboardSession` | 会话状态；候选判定委托给 `DisplayTable`，两趟（应用侧 + daemon 精化）共用同一套判据 | `DashboardSession.java:124-197` |
 | `DisplayTable` | 副屏表解析（`dumpsys` 文本）+ 三族判据 + owner 归属否决 + 通路判定（`SLOT`/`DIRECT`/`UNSUPPORTED`）+ 单调精化。**纯 Java、零 Android 依赖，因而可离线验证** | `DisplayTable.java:170-283` |
-| 平台事实诊断 | 未适配时连 `product=` / `sdk=` / `single_os=` 一起给出，否则用户无法反馈、也无法定位。`product`/`sdk` 取自应用侧 `Build`，`single_os` 经 shell 读 `getprop`（`SystemProperties` 是 @hide，反射在 targetSdk 32 下会被隐藏 API 限制挡住）。**纯诊断，不参与任何判定** | `DashboardSession.java`（`platformFacts`/`statOf`）、`ShellChannel.java`（`platformFacts()`） |
+| 平台事实诊断 | 未适配时连 `product=` / `sdk=` / `single_os=` 一起给出，否则用户无法反馈、也无法定位。`product`/`sdk` 取自应用侧 `Build`，`single_os` 经 shell 读 `getprop`（`SystemProperties` 是 @hide，反射在 targetSdk 32 下会被隐藏 API 限制挡住）。**只在判定失败时输出**，**纯诊断，不参与任何判定** | `DashboardSession.java`（`platformFacts`/`statOf`）、`ShellChannel.java`（`platformFacts()`） |
+| 一键导出 | 操作条「诊断」按钮 → 报告含身份/设备/平台事实/通路判定/原始屏表/日志尾部 6000 字符。先 `Intent.ACTION_SEND` 交系统分享，同时写 `getExternalFilesDir` 下的 txt；车机多半没有分享目标，抛 `ActivityNotFoundException` 时以文件与路径兜底 | `CastActivity.java`（`exportDiagnostics`/`diagnosticReport`/`logTail`）、`res/layout/activity_cast.xml`（`btnDiagnostics`） |
 | `ShellChannel` | shell 长连接 + 全部 shell 原语（投屏/输入/清单/任务/搬屏/抓帧） | `ShellChannel.java:55` |
 | `InjectClient` | 降级路径编排：应用清单、触摸兜底、抓帧预览、**看门状态机** | `InjectClient.java:44` |
 | `PrivilegedClient` | App 侧 Binder 客户端（进程内单例）：拉起、递 Surface、注入触摸 | `PrivilegedClient.java:59`，单例 `:157-171` |

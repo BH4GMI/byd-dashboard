@@ -2,10 +2,11 @@
 
 > ## 真机验证状态
 >
-> ⚠️ **本分支 `beta/4.4-display-detect` 是预发布（pre-release）。**
-> 下面这段真机结论属于 `4.3-user-intent`，**不适用于本分支的 4.4 改动**。
-> 4.4 的认屏判据化、owner 归属校验与 DiLink 3/4 直投通路**都还没有装车验证**
-> —— 目前只有离线判据（见 `CHANGELOG.md` 的 4.4 一节）。要用稳定版请取 `main` 分支的 `v4.3-user-intent`。
+> ⚠️ **本分支 `beta/5.0` 是预发布（pre-release）。**
+> 下面这段真机结论属于 `4.3-user-intent`，**不适用于本分支的 5.0 改动**。
+> 5.0 的认屏判据化、owner 归属校验、DiLink 3/4 直投通路、失败时诊断与一键导出
+> **都还没有装车验证** —— 目前只有离线判据（见 `CHANGELOG.md` 的 5.0 一节）。
+> 要用稳定版请取 `main` 分支的 `v4.3-user-intent`。
 >
 > **4.3-user-intent 已在真机（DiLink 5.0）跑通端到端投屏**：
 > 覆盖安装 → 目标应用冷启动投到 display 3 → 仪表屏出画 → 守位成立。
@@ -27,7 +28,7 @@
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
-> 当前版本 **4.4-diagnostics**（`versionCode 117`，**预发布 / pre-release，未实机验证**）。
+> 当前版本 **5.0**（`versionCode 118`，**预发布 / pre-release，未实机验证**）。
 > 上一个实机验证过的稳定版本是 **4.3-user-intent**（`versionCode 115`），在 `main` 分支。
 > 版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 

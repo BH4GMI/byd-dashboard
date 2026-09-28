@@ -1,12 +1,15 @@
 package com.byd.dashcast;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -32,11 +35,17 @@ import android.widget.Toast;
 import com.byd.dashcast.adb.AdbBootstrap;
 import com.byd.dashcast.adb.AdbClient;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.text.Collator;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -339,6 +348,12 @@ public final class CastActivity extends Activity {
             }
         });
 
+        button(R.id.btnDiagnostics, new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportDiagnostics();
+            }
+        });
         button(R.id.btnApps, new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -534,6 +549,109 @@ public final class CastActivity extends Activity {
     private void button(int id, View.OnClickListener listener) {
         Button button = (Button) findViewById(id);
         button.setOnClickListener(listener);
+    }
+
+    /**
+     * 一键导出诊断报告：把判定所依据的事实汇成一段文本，先交给系统分享，同时写一份文件。
+     *
+     * <p>为什么必须有它：车机固件会丢弃第三方应用的 {@code Log.*}，现场只落在应用自己的
+     * 日志文件里；而要求用户连 adb、再摸到那个路径，等于把排障门槛抬到用户够不着的地方 ——
+     * 结果就是"出问题了，但拿不到任何信息"。
+     *
+     * <p>为什么同时写文件：车机上很可能**没有任何能接收分享的应用**，那时分享会抛
+     * {@link ActivityNotFoundException}；文件与路径是那时的兜底。
+     */
+    private void exportDiagnostics() {
+        String report = diagnosticReport();
+        File out = null;
+        try {
+            File dir = getExternalFilesDir(null);
+            out = new File(dir, "diagnostics-" + stamp("yyyyMMdd-HHmmss") + ".txt");
+            Files.write(out.toPath(), report.getBytes(StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            // 写盘失败不该让整次导出失败：分享那条路还能走。
+            AppLog.w(TAG, "诊断报告写盘失败：" + t);
+            out = null;
+        }
+
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType("text/plain");
+        send.putExtra(Intent.EXTRA_SUBJECT, "dashcast 诊断报告");
+        send.putExtra(Intent.EXTRA_TEXT, report);
+        try {
+            startActivity(Intent.createChooser(send, getString(R.string.diagnostics_share)));
+        } catch (ActivityNotFoundException e) {
+            // 车机上没有分享目标属正常情况，不当作错误：文件已经写了，把路径交给用户。
+            String path = out == null ? AppLog.path() : out.getAbsolutePath();
+            Toast.makeText(this, getString(R.string.diagnostics_no_target) + "\n" + path,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (out != null) {
+            Toast.makeText(this, getString(R.string.diagnostics_saved, out.getAbsolutePath()),
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 报告正文：换一台车出问题，只看这一份就够定位。 */
+    private String diagnosticReport() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("dashcast 诊断报告\n");
+        sb.append("生成时间：").append(stamp("yyyy-MM-dd HH:mm:ss")).append('\n');
+        sb.append("应用：").append(getPackageName()).append("  ").append(appVersion()).append('\n');
+        sb.append("设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
+                .append("  Android ").append(Build.VERSION.RELEASE)
+                .append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+        sb.append("平台事实：").append(session.platformFacts()).append('\n');
+        sb.append("通路判定：").append(session.path()).append('\n');
+        sb.append("投屏目标 displayId=").append(session.displayId()).append('\n');
+        sb.append("仪表屏 displayId=").append(session.projectionDisplayId())
+                .append(session.projectionFromConstant() ? "（实测常量）" : "（枚举命中）").append('\n');
+        sb.append("未适配原因：").append(session.unsupportedReason().isEmpty()
+                ? "（无，判定正常）" : session.unsupportedReason()).append('\n');
+        sb.append("通道就绪：").append(channelReady()).append('\n');
+        sb.append("\n原始屏表（dumpsys display | grep mBaseDisplayInfo）：\n");
+        sb.append(session.lastDump().isEmpty() ? "（未取到）" : session.lastDump()).append('\n');
+        sb.append("\n日志尾部（").append(AppLog.path()).append("）：\n");
+        sb.append(logTail(6000));
+        return sb.toString();
+    }
+
+    private String appVersion() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return "versionName=" + info.versionName + "  versionCode=" + info.versionCode;
+        } catch (Throwable t) {
+            return "（版本读取失败：" + t + "）";
+        }
+    }
+
+    private String channelReady() {
+        try {
+            return String.valueOf(ShellChannel.get().isReady());
+        } catch (Throwable t) {
+            return "未知（" + t + "）";
+        }
+    }
+
+    /**
+     * 日志尾部。整篇可能很大，截最后一段就够定位。
+     *
+     * <p>先把字节整体解码、再按**字符**截 —— 不能按字节截，那样会从多字节字符中间劈开，
+     * 报告里会多出一个乱码字符。
+     */
+    private static String logTail(int maxChars) {
+        try {
+            byte[] all = Files.readAllBytes(new File(AppLog.path()).toPath());
+            String text = new String(all, StandardCharsets.UTF_8);
+            return text.length() <= maxChars ? text : text.substring(text.length() - maxChars);
+        } catch (Throwable t) {
+            return "（读不到日志：" + t + "）\n";
+        }
+    }
+
+    private static String stamp(String pattern) {
+        return new SimpleDateFormat(pattern, Locale.US).format(new Date());
     }
 
     // ---- 一键投屏 / 首开自动 ------------------------------------------------

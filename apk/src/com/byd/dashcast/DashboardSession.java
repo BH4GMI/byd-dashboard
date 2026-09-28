@@ -109,6 +109,8 @@ public final class DashboardSession {
      * 压平后相邻的 {@code key=value} 会粘连，再从中取值就会把后面几个键一起读进来。
      */
     private String singleOs = "";
+    /** 最近一次 daemon 屏表原文，供一键诊断导出附上原始证据。 */
+    private String lastDump = "";
     /**
      * 主投影屏：仪表盘**实际显示内容**的那块。
      *
@@ -162,6 +164,7 @@ public final class DashboardSession {
             platformFacts = platformFacts + " ｜ "
                     + facts.replace('\n', ' ').replace('\r', ' ').trim();
         }
+        lastDump = dumpsysDisplay == null ? "" : dumpsysDisplay.trim();
         return apply(DisplayTable.parse(dumpsysDisplay), true);
     }
 
@@ -242,11 +245,13 @@ public final class DashboardSession {
             projectionFromConstant = true;
         }
 
+        // 平台事实**只在失败时**出。正常路径靠「通路=」已能说明用了哪套机制，把机型信息
+        // 混进每一条判定日志只会淹没现场；需要时用界面的「诊断」按钮按需导出完整现场。
         AppLog.i(TAG, (fromDaemon ? "daemon 精化：" : "应用侧判定：") + next.reason
                 + " ｜ 投屏目标=" + displayId
                 + " 仪表屏=" + projectionDisplayId
                 + (projectionFromConstant ? "（实测常量）" : "（枚举命中）")
-                + " ｜ 平台: " + platformFacts);
+                + (next.isActive() ? "" : " ｜ 平台: " + platformFacts));
         if (!next.isActive()) {
             AppLog.w(TAG, "本机未适配：" + unsupportedReason + "；不做任何猜测");
         }
@@ -305,5 +310,10 @@ public final class DashboardSession {
      */
     public String platformFacts() {
         return platformFacts;
+    }
+
+    /** 最近一次 daemon 屏表原文（未取到时为空串）。诊断导出用，不参与判定。 */
+    public String lastDump() {
+        return lastDump;
     }
 }
