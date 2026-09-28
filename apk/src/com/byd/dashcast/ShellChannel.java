@@ -413,6 +413,24 @@ public final class ShellChannel {
     }
 
     /**
+     * 车机平台事实（只读 {@code getprop}），纯诊断用。
+     *
+     * <p>为什么走 shell 而不是应用侧读：{@code ro.*} 只能用
+     * {@code android.os.SystemProperties}（@hide）读，反射在 targetSdk 32 下会被隐藏 API
+     * 限制挡住；这条通道本来就是 uid 2000，不必绕。
+     * {@code ro.product.name} 应用侧另有 {@code Build.PRODUCT} 可读，两边都记便于对照。
+     *
+     * <p>为什么自己拼 {@code key=value} 而不用裸 {@code getprop}：属性不存在时
+     * {@code getprop} 只回一个空行，按行号取值会整列错位；自带标签就不会串位，
+     * 落盘记录也自解释。
+     */
+    public String platformFacts() {
+        return runBig("echo single_os=$(getprop ro.build.system.fission_single_os)"
+                + "; echo product=$(getprop ro.product.name)"
+                + "; echo sdk=$(getprop ro.build.version.sdk)");
+    }
+
+    /**
      * 抓某个 display 的一帧，返回 PNG 字节。失败返回 null。
      *
      * <p>为什么要抓**镜像屏**而不是投屏屏：共享屏（display 3/4）只是中转，

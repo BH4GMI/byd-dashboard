@@ -27,7 +27,7 @@
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
-> 当前版本 **4.4-display-detect**（`versionCode 116`，**预发布 / pre-release，未实机验证**）。
+> 当前版本 **4.4-diagnostics**（`versionCode 117`，**预发布 / pre-release，未实机验证**）。
 > 上一个实机验证过的稳定版本是 **4.3-user-intent**（`versionCode 115`），在 `main` 分支。
 > 版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 

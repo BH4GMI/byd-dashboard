@@ -2,6 +2,7 @@ package com.byd.dashcast;
 
 import android.content.Context;
 import android.hardware.display.DisplayManager;
+import android.os.Build;
 import android.view.Display;
 
 /**
@@ -97,6 +98,18 @@ public final class DashboardSession {
     /** 判「本机未适配」的原因；为空表示解析正常。用于日志、UI 与诊断导出。 */
     private String unsupportedReason = "";
     /**
+     * 平台事实，纯诊断：应用侧先填 {@code product=} / {@code sdk=}，
+     * daemon 那一趟补上 shell 读到的 {@code single_os=} 等。
+     */
+    private String platformFacts = appSideFacts();
+    /**
+     * {@code ro.build.system.fission_single_os} 的值（"" = 没读到）。
+     *
+     * <p>单独存一份，是因为 {@link #platformFacts} 会被压平成一行给日志用，
+     * 压平后相邻的 {@code key=value} 会粘连，再从中取值就会把后面几个键一起读进来。
+     */
+    private String singleOs = "";
+    /**
      * 主投影屏：仪表盘**实际显示内容**的那块。
      *
      * <p>它与 {@link #displayId}（投屏目标槽位）是两个不同的屏，用途正好相反：
@@ -137,8 +150,52 @@ public final class DashboardSession {
      * display 2 就是 {@code getDisplay(2) = null}），而 DiLink 3/4 的仪表屏正属于这一类 ——
      * 不精化就永远发现不了它，{@link DisplayTable.Path#DIRECT} 那条通路也就无从启用。
      */
-    public int refineFromDaemon(String dumpsysDisplay) {
+    public int refineFromDaemon(String dumpsysDisplay, String daemonPlatformFacts) {
+        // 应用侧那一趟读不到 ro.* 属性（SystemProperties 是 @hide），这里用 shell 读到的补齐。
+        // 每次都从应用侧事实重建，避免精化跑两遍时把同一段事实追加两次。
+        platformFacts = appSideFacts();
+        singleOs = "";
+        String facts = daemonPlatformFacts == null ? "" : daemonPlatformFacts.trim();
+        if (!facts.isEmpty()) {
+            // 先在**未压平**的原文上取值，再压平成一行给日志 —— 顺序反了会读到粘连的值。
+            singleOs = statOf(facts, "single_os");
+            platformFacts = platformFacts + " ｜ "
+                    + facts.replace('\n', ' ').replace('\r', ' ').trim();
+        }
         return apply(DisplayTable.parse(dumpsysDisplay), true);
+    }
+
+    /** 应用侧平台事实：随时可读，不需要通道。 */
+    private static String appSideFacts() {
+        return "product=" + Build.PRODUCT + " sdk=" + Build.VERSION.SDK_INT;
+    }
+
+    /** 从 {@code key=value} 形式的平台事实里取值；取不到返回空串。**只能传未压平的原文**。 */
+    private static String statOf(String facts, String key) {
+        if (facts == null) {
+            return "";
+        }
+        for (String line : facts.split("\n")) {
+            int eq = line.indexOf('=');
+            if (eq > 0 && line.substring(0, eq).trim().equals(key)) {
+                return line.substring(eq + 1).trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 单 OS 模式的额外说明。**只影响文案，不参与任何判定** —— 判定仍然只看显示拓扑。
+     *
+     * <p>为什么值得单独说：这类机型上仪表由车机原生渲染，第三方投屏物理上不适用。
+     * 不说清楚，用户只会看到一句笼统的"未命中"，然后反复尝试并以为是自己操作不对。
+     */
+    private String singleOsNote() {
+        if ("1".equals(singleOs)) {
+            return "；⚠ ro.build.system.fission_single_os=1（单 OS 模式）：仪表由车机原生渲染，"
+                    + "这类机型不适用第三方投屏 —— 属机型限制，不是本应用配置错误";
+        }
+        return "";
     }
 
     /** 应用侧枚举。uid 就是本应用，拿不到 owner，所以 ownerUid 一律记 -1（未知不否决）。 */
@@ -171,7 +228,9 @@ public final class DashboardSession {
                 ? DisplayTable.refine(pick, table) : table.resolve();
         pick = next;
         displayId = next.castDisplayId;
-        unsupportedReason = next.isActive() ? "" : next.reason;
+        // 未适配时必须连平台事实一起给出：只有"没命中"这三个字，用户无法反馈、我们也无法定位。
+        unsupportedReason = next.isActive()
+                ? "" : next.reason + " ｜ 平台: " + platformFacts + singleOsNote();
 
         // 仪表屏优先用枚举/daemon 的真实值；都没有才退到本车实测常量 ——
         // 它在应用侧**永远**枚举不到（{@code getDisplay(2) = null}），
@@ -186,7 +245,8 @@ public final class DashboardSession {
         AppLog.i(TAG, (fromDaemon ? "daemon 精化：" : "应用侧判定：") + next.reason
                 + " ｜ 投屏目标=" + displayId
                 + " 仪表屏=" + projectionDisplayId
-                + (projectionFromConstant ? "（实测常量）" : "（枚举命中）"));
+                + (projectionFromConstant ? "（实测常量）" : "（枚举命中）")
+                + " ｜ 平台: " + platformFacts);
         if (!next.isActive()) {
             AppLog.w(TAG, "本机未适配：" + unsupportedReason + "；不做任何猜测");
         }
@@ -234,5 +294,16 @@ public final class DashboardSession {
      */
     public String path() {
         return pick == null ? "未判定" : pick.path.name();
+    }
+
+    /**
+     * 平台事实，纯诊断：{@code product=} / {@code sdk=} 来自应用侧，
+     * {@code single_os=} 等来自通道拉起后 shell 读到的值。
+     *
+     * <p>它**不参与任何判定** —— 通路只看显示拓扑。这是刻意的：机型名与 SDK 是厂商贴的标签，
+     * 不是能力；同代不同固件可以改屏名或可见性策略。
+     */
+    public String platformFacts() {
+        return platformFacts;
     }
 }

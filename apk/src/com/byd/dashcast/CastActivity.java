@@ -492,12 +492,16 @@ public final class CastActivity extends Activity {
             return;
         }
         try {
+            String facts = ShellChannel.get().platformFacts();
             String dump = ShellChannel.get().daemonDisplays();
             if (dump == null || dump.trim().isEmpty()) {
+                // 屏表没取到也照样把平台事实记下来 —— 这正是最需要诊断的那种现场，
+                // 提前 return 会让"为什么没取到"永远没有上下文。
                 AppLog.w(TAG, "daemon 屏表为空（通道可用但没取到），保留应用侧判定");
+                session.refineFromDaemon("", facts);
                 return;
             }
-            session.refineFromDaemon(dump);
+            session.refineFromDaemon(dump, facts);
         } catch (Throwable t) {
             AppLog.w(TAG, "daemon 屏表精化失败，保留应用侧判定：" + t);
         }
