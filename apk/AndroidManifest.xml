@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.byd.dashcast"
-    android:versionCode="114"
-    android:versionName="4.2-cast-hold">
+    android:versionCode="115"
+    android:versionName="4.3-user-intent">
 
     <uses-sdk
         android:minSdkVersion="26"

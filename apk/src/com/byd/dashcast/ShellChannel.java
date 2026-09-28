@@ -79,6 +79,26 @@ public final class ShellChannel {
     private static final Pattern TASK_LINE =
             Pattern.compile("Task\\{[0-9a-f]+ #(\\d+) [^}]*A=\\d+:(\\S+?)[\\s}]");
 
+    /** Task 行里的 {@code sz=N}：该 task 内实际有多少个 activity。 */
+    private static final Pattern TASK_SIZE = Pattern.compile("\\bsz=(\\d+)");
+
+    /**
+     * 该 Task 行是否对应一个**活着的**任务。
+     *
+     * <p>{@code sz=0} 是应用进程死亡后残留的空壳：它既不能显示，也不能被
+     * {@code am display move-stack} 搬动，语义上等于"没有任务"。把空壳当成有任务，
+     * 上层就会跳过启动、对着一个搬不动的空壳空转到超时 —— 2026-09-28 实车故障即此：
+     * 网易云被系统回收后残留 {@code sz=0} 的 task，投屏每 250ms 重试一次
+     * {@code move-stack}，8 秒后报"搬到仪表盘没生效"。
+     *
+     * <p>解析不到 {@code sz} 时按"有内容"处理：dumpsys 格式变化只会退化成旧行为，
+     * 不会误判成"没有任务"而反复冷启动应用。
+     */
+    private static boolean isLiveTask(String taskLine) {
+        Matcher m = TASK_SIZE.matcher(taskLine);
+        return !m.find() || Integer.parseInt(m.group(1)) > 0;
+    }
+
     private static final ShellChannel INSTANCE = new ShellChannel();
 
     private final Object lock = new Object();
@@ -601,6 +621,10 @@ public final class ShellChannel {
      *
      * <p>**在设备端先 grep 再回传**：全量输出约 12000 行，过滤后只剩 ~50 行。
      * 实测设备端耗时 0.03s，所以看门每秒巡检一次也不构成负担。
+     *
+     * <p>**只认活着的任务**（{@code sz>0}，见 {@link #isLiveTask}）：应用进程死亡后残留的
+     * 空壳 task 会被跳过并返回 -1，调用方据此去"启动应用"，而不是对着一个搬不动的空壳
+     * 搬移到超时。同一个包在多块屏上都有残留 task 时，跳过空壳也顺带选中了真正有内容的那个。
      */
     public int taskDisplay(String packageName) {
         String out = runBig(TASK_QUERY);
@@ -615,14 +639,14 @@ public final class ShellChannel {
                 continue;
             }
             Matcher m = TASK_LINE.matcher(line);
-            if (m.find() && m.group(2).equals(packageName)) {
+            if (m.find() && m.group(2).equals(packageName) && isLiveTask(line)) {
                 return display;
             }
         }
         return -1;
     }
 
-    /** 该包 root task 的 id；找不到返回 -1。 */
+    /** 该包 root task 的 id（只认活着的任务，见 {@link #isLiveTask}）；找不到返回 -1。 */
     public int taskId(String packageName) {
         String out = runBig(TASK_QUERY);
         if (out == null) {
@@ -630,7 +654,7 @@ public final class ShellChannel {
         }
         for (String line : out.split("\n")) {
             Matcher m = TASK_LINE.matcher(line);
-            if (m.find() && m.group(2).equals(packageName)) {
+            if (m.find() && m.group(2).equals(packageName) && isLiveTask(line)) {
                 return Integer.parseInt(m.group(1));
             }
         }
@@ -664,6 +688,30 @@ public final class ShellChannel {
         }
         return taskDisplay(packageName) == display;
     }
+
+    // ---- 启动记录（判断"这次启动是谁发起的"）--------------------------------
+
+    /**
+     * 最近的 AMS activity 启动记录（每个成功的启动一条 {@code START u0 {…} from uid N}）。
+     *
+     * <p>为什么走日志：应用进程拿不到带"发起者 uid"的任务 API（{@code TaskStackListener} 是
+     * @hide 且要 {@code MANAGE_ACTIVITY_TASKS}），而这条记录是 AMS 自己打的、且**留在缓冲区里**，
+     * 所以可以事后读 —— 不像"盯着屏位轮询"那样受时序摆布。判据与出处见
+     * {@link ActivityStartLog}。
+     *
+     * <p>**设备端先按 tag 过滤再回传**：整块缓冲区有几百 KB，过滤后只剩几十行。
+     * 不加 {@code -t}：{@code -t} 是按**原始行数**截断，busy 时几千行原始日志可能只覆盖不到一秒，
+     * 那就会漏掉真正的启动记录；按 tag 过滤是对整块缓冲区生效的，不会漏。
+     *
+     * @return 日志文本；通道断了返回 null
+     */
+    public String recentStartLog() {
+        return run(RECENT_STARTS);
+    }
+
+    /** 只认 ActivityTaskManager 这个 tag，再取最后 40 条启动记录。 */
+    private static final String RECENT_STARTS =
+            "logcat -d -b main -b system -s ActivityTaskManager:I | grep 'START u' | tail -n 40";
 
     private static int parseDisplayHeader(String line) {
         // 形如：  Display #3 (activities from top to bottom):

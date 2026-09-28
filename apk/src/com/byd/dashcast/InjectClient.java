@@ -238,6 +238,17 @@ public final class InjectClient {
         return shell.taskDisplay(packageName);
     }
 
+    /**
+     * 最近的 AMS activity 启动记录。
+     *
+     * <p>守位用它来判断"目标被挪回主屏"是**应用自己跳的**还是**用户点桌面图标叫的** ——
+     * 只看屏位分不出这两种，而决定完全相反（前者要搬回，后者要按用户意图结束投屏）。
+     * 解析与判据见 {@link ActivityStartLog}。
+     */
+    public String recentStartLog() {
+        return shell.recentStartLog();
+    }
+
     /** 归位轮询间隔。与界面心跳的 2s 不同：链路线程自己持有不变量，可以问得勤一点。 */
     private static final long SETTLE_POLL_MS = 250L;
 

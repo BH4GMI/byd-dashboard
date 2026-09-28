@@ -22,7 +22,7 @@
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
-> 当前版本 **4.2-cast-hold**（`versionCode 114`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+> 当前版本 **4.3-user-intent**（`versionCode 115`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
 
