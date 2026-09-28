@@ -24,13 +24,13 @@
 > 许可证全文见 [`LICENSE`](LICENSE)。
 > 当前版本 **4.3-user-intent**（`versionCode 115`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
 >
-> **为什么本仓的 Latest release 是 5.0、而 `main` 还写着 4.3？**
-> 这是刻意的，不是漏同步：`main` 保持**经实车验证的 4.3-user-intent** 作为可信基线，
-> 而 5.0（跨代次适配 + 自助排障，**尚未实机验证**）已作为正式 release 发布，
-> 开发在 `beta/5.0` 分支上继续。
+> **`main` 与 Releases 的关系（刻意的，不是漏同步）**
+> `main` 保持**经实车验证的 4.3-user-intent** 作为可信基线；尚未实机验证的版本走
+> `beta/<版本>` 分支发布。所以当前 Latest release 就是 `v4.3-user-intent`，与 `main` 一致。
 >
-> - 只想要**验证过**的版本：取 [`v4.3-user-intent`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v4.3-user-intent)。
-> - 想试 5.0：取 [`v5.0`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v5.0)，并先读它的验证状态表。
+> - 只想要**验证过**的版本：取 [`v4.3-user-intent`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v4.3-user-intent)（= `main`）。
+> - 想试最新的未验证版本：取 [`v5.1`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v5.1)（`versionCode 119`，开发在 `beta/5.1`），并先读它的验证状态表。
+>   （`5.0` 的 release 与 tag 已下架，内容并入 `5.1`。）
 
 ---
 
