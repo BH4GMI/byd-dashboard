@@ -16,7 +16,7 @@
 | 项 | 值 |
 | --- | --- |
 | 产物 | `apk/dashcast.apk`（`apk/dashcast.apk.idsig` 是 `apksigner` 的 v4 副产物，安装用不到） |
-| 包名 / 版本 | `com.byd.dashcast` · `versionName="4.3-user-intent"` · `versionCode="115"`（`AndroidManifest.xml:4-5`） |
+| 包名 / 版本 | `com.byd.dashcast` · `versionName="4.4-display-detect"` · `versionCode="116"`（`AndroidManifest.xml:4-5`，**预发布，未实机验证**） |
 | SDK | `minSdk 26` / `targetSdk 32`（`:7-9`） |
 | 权限 | `INTERNET`、`RECEIVE_BOOT_COMPLETED`、`FOREGROUND_SERVICE`（`:12-16`，最后一项给守位服务）；**无 `INJECT_EVENTS`、无 `READ_FRAME_BUFFER`** |
 | 安装方式 | 普通应用安装（`untrusted_app`，实测 `userId=10124`）；**无 root、无系统签名** |
@@ -83,6 +83,7 @@ apk/                              车机端应用（唯一交付物）
     AppLog.java                   关键日志落盘（车机日志策略会丢弃第三方应用的 Log.*）
     GuideActivity.java            ADB 授权引导（兼"快速通道"）
     DashboardSession.java         仪表屏定位（投屏槽位 + 主投影屏两个 id）
+    DisplayTable.java             副屏表解析与投屏通路判定（纯 Java，零 Android 依赖，可离线验证）
     DashboardEye.java             抓帧判页（两维三分类；固定抓主投影屏，不跟窗口走）
     ShellChannel.java             ADB shell 长连接通道 + 搬屏原语
     InjectClient.java             降级路径编排 + 应用枚举 + 归位原语 ensureOnDisplay + 抓帧
@@ -224,7 +225,8 @@ APK 路径取自 `ApplicationInfo.sourceDir`（`:498-504`），**不去解析 `p
 | --- | --- | --- |
 | `CastActivity` | 主界面 + 全部编排：投屏、预览三态状态机、触控转发、看门、一键脚本 | `CastActivity.java:64`，`onCreate:245-383` |
 | `GuideActivity` | ADB 授权引导，兼「快速通道」：已就绪时几百毫秒内直接转走 | `GuideActivity.java:59-79` |
-| `DashboardSession` | 定位投屏槽位（`displayId`）与主投影屏（`projectionDisplayId`） | `DashboardSession.java:94-146` |
+| `DashboardSession` | 会话状态；候选判定委托给 `DisplayTable`，两趟（应用侧 + daemon 精化）共用同一套判据 | `DashboardSession.java:124-197` |
+| `DisplayTable` | 副屏表解析（`dumpsys` 文本）+ 三族判据 + owner 归属否决 + 通路判定（`SLOT`/`DIRECT`/`UNSUPPORTED`）+ 单调精化。**纯 Java、零 Android 依赖，因而可离线验证** | `DisplayTable.java:170-283` |
 | `ShellChannel` | shell 长连接 + 全部 shell 原语（投屏/输入/清单/任务/搬屏/抓帧） | `ShellChannel.java:55` |
 | `InjectClient` | 降级路径编排：应用清单、触摸兜底、抓帧预览、**看门状态机** | `InjectClient.java:44` |
 | `PrivilegedClient` | App 侧 Binder 客户端（进程内单例）：拉起、递 Surface、注入触摸 | `PrivilegedClient.java:59`，单例 `:157-171` |
@@ -757,7 +759,7 @@ onDestroy  → 同上，外加收掉心跳线程与 touchExecutor
 
 - **`com.byd.accountProvider` 不是公开 API**：车机 OTA 改动 authority 或加上权限就会失效；代码里任何读取失败都降级成「识别不到」，不崩（`CarAccount.java:28-32`）。
 - **身份键会漂移**：`account.identity()` 依次退到 `userId → photoUrl → nickName`，后两者会随用户改头像/改昵称而变，那时「首开自动」的绑定自然失效，需要用户重新打开一次开关。实测本机从应用 uid 读 `account_big_data` 的 `userId` 是**空串**（shell 能读到 33 字符的值），同一个 Provider 按调用方 uid 做了区别对待（`CarAccount.java:77-97`）。
-- **`DashboardSession` 的两个兜底常量（3 与 2）来自本车实测**：换车型/固件要重新确认显示拓扑，不要假定 id 不变。
+- **`DashboardSession` 只剩一个兜底常量（2）来自本车实测**：`PROJECTION_DISPLAY_FALLBACK_ID = 2` 保留，因为应用侧**永远**枚举不到主投影屏（`getDisplay(2) = null`），常量就是这条路的正常取值。**投屏槽位的兜底常量 3 已在 4.4 删除** —— 它是纯粹的猜测，认不出来一律判 `UNSUPPORTED`（详见 `DisplayTable`）。换车型/固件仍要重新确认显示拓扑，不要假定 id 不变。
 - **判页阈值余量不宽**：`BAND_TARGET_MAX = 50` 的实测余量是 21（目标页）对 402（车机地图），约 20 倍。若目标页顶部出现亮内容（例如换版本后加了顶栏），会被判成 `OTHER` 而**多等到 20 秒超时**（报失败，不会误报成功）。届时重新标定即可。
 - **`bypassHiddenApi()` 的实现已经逐行核读过了**（不再列在「未确认」里）：`VMRuntime.getRuntime()` + `setHiddenApiExemptions(new String[]{"L"})`，即全量豁免（§7.1）。
 - **没有做的事**：给触摸流做插值/重采样（拖动帧率的问题已定位到源应用，见下），以及换一个轻量应用投到仪表屏做拖动对照。

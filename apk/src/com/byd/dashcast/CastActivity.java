@@ -418,9 +418,12 @@ public final class CastActivity extends Activity {
         // 而不是指投屏槽位（抓槽位全黑、往槽位注入会被 InputDispatcher 丢掉）。
         injector.setProjectionDisplay(session.projectionDisplayId());
         favorites = new Favorites(this);
-        AppLog.i(TAG, "会话就绪：投屏槽=" + session.displayId()
-                + " 主投影屏=" + session.projectionDisplayId()
-                + " 由枚举命中=" + session.foundByName()
+        AppLog.i(TAG, "会话就绪：通路=" + session.path()
+                + " 投屏目标=" + session.displayId()
+                + " 仪表屏=" + session.projectionDisplayId()
+                + (session.projectionFromConstant() ? "（实测常量）" : "（枚举命中）")
+                + (session.unsupportedReason().isEmpty()
+                        ? "" : " 未适配=" + session.unsupportedReason())
                 + " 日志=" + AppLog.path());
     }
 
@@ -448,6 +451,7 @@ public final class CastActivity extends Activity {
                 final AdbBootstrap.Result result =
                         AdbBootstrap.provision(CastActivity.this,
                                 AdbBootstrap.TIMEOUT_BACKGROUND_MS, false);
+                refineSessionFromDaemon(result);
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -470,6 +474,33 @@ public final class CastActivity extends Activity {
         }, "dashcast-channel-bringup");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    /**
+     * 通道一通，就用 daemon 的屏表精化会话（跑在通道拉起线程上，不能占 UI 线程）。
+     *
+     * <p>为什么必须在这一步做、且**在通知界面之前**做完：应用侧枚举看不到被固件按 uid
+     * 过滤掉的屏，而 DiLink 3/4 的仪表屏正属于这一类。精化放在通知界面之前，
+     * {@link #onChannelReady()}（含首开自动那条隐性路径）看到的就已经是最终结论，
+     * 不需要为"结论还会变"另加一套重算。
+     *
+     * <p>失败**不阻断**拉起：拿不到 daemon 屏表就保留应用侧结论。但一定要留日志 ——
+     * 否则"精化没生效"会变成看不见的静默降级，而这正是本次加固要消灭的东西。
+     */
+    private void refineSessionFromDaemon(AdbBootstrap.Result result) {
+        if (!result.isReady()) {
+            return;
+        }
+        try {
+            String dump = ShellChannel.get().daemonDisplays();
+            if (dump == null || dump.trim().isEmpty()) {
+                AppLog.w(TAG, "daemon 屏表为空（通道可用但没取到），保留应用侧判定");
+                return;
+            }
+            session.refineFromDaemon(dump);
+        } catch (Throwable t) {
+            AppLog.w(TAG, "daemon 屏表精化失败，保留应用侧判定：" + t);
+        }
     }
 
     /**
@@ -634,7 +665,7 @@ public final class CastActivity extends Activity {
             final boolean background, final Runnable onDone) {
         quickCastOk = false;
         if (!session.isActive()) {
-            String text = getString(R.string.status_no_display);
+            String text = noDisplayText();
             setStatus(text);
             toast(text);
             if (onDone != null) {
@@ -972,7 +1003,7 @@ public final class CastActivity extends Activity {
      */
     private void launchOnDashboard(final AppRepo.Entry entry) {
         if (!session.isActive()) {
-            setStatus(getString(R.string.status_no_display));
+            setStatus(noDisplayText());
             return;
         }
         setPanelOpen(false);
@@ -1439,13 +1470,26 @@ public final class CastActivity extends Activity {
         injector.unwatch();
     }
 
+    /**
+     * 没有可用副屏时的统一文案。
+     *
+     * <p>区分两种完全不同的终态：**本机未适配**（认不出投屏槽位，我们主动不猜 id）与
+     * 一般性的"找不到"。前者是机型问题，用户可以据此去反馈；糊成一句"找不到仪表盘屏"
+     * 只会让人以为是自己没操作对。可核对的原因（应用侧实际枚举到的副屏）落在 dashcast.log。
+     */
+    private String noDisplayText() {
+        return session.unsupportedReason().isEmpty()
+                ? getString(R.string.status_no_display)
+                : getString(R.string.status_unsupported);
+    }
+
     /** 状态行是唯一的用户可见反馈，任何一处变化都要走这里。 */
     private void refreshStatus() {
         if (status == null) {
             return;
         }
         if (!session.isActive()) {
-            setStatus(getString(R.string.status_no_display));
+            setStatus(noDisplayText());
             return;
         }
         String text = getString(R.string.status_ready) + " · display " + session.displayId();
@@ -1474,7 +1518,7 @@ public final class CastActivity extends Activity {
 
     private void sendKey(int keyCode) {
         if (!session.isActive()) {
-            setStatus(getString(R.string.status_no_display));
+            setStatus(noDisplayText());
             return;
         }
         injector.key(keyCode);

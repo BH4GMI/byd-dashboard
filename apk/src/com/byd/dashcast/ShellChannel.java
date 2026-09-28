@@ -397,6 +397,22 @@ public final class ShellChannel {
     }
 
     /**
+     * 车机副屏表原文（每条屏一行），交给 {@link DisplayTable#parse} 解析。
+     *
+     * <p>为什么在**设备端** grep 而不是把整份 {@code dumpsys display} 拉回来：那份 dump
+     * 实测 49 KB / 1032 行，而这条 shell 通道拿不回大输出（见 {@link #screencap} 的注释：
+     * PNG 只回来 6 字节）。设备端过滤后实测 **4 行 / 3498 字节 / 136 ms**，落在通道舒适区内。
+     * 这也是原版 APK 的做法：{@code c0/k.m(I)} 解出的就是
+     * {@code dumpsys display | grep mOverrideDisplayInfo=DisplayInfo{}。
+     *
+     * <p>为什么只认 {@code mBaseDisplayInfo}：**每条屏恰好一行**，且名字、displayId、owner
+     * 同在这一行上。上面那段 {@code DisplayDeviceInfo{...}} 只有名字、没有 displayId，用不了。
+     */
+    public String daemonDisplays() {
+        return runBig("dumpsys display | grep mBaseDisplayInfo");
+    }
+
+    /**
      * 抓某个 display 的一帧，返回 PNG 字节。失败返回 null。
      *
      * <p>为什么要抓**镜像屏**而不是投屏屏：共享屏（display 3/4）只是中转，

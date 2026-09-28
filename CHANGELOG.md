@@ -15,6 +15,59 @@
 
 ---
 
+## 4.4-display-detect — versionCode 116（2026-09-28，**预发布 / pre-release，未实机验证**）
+
+> ⚠️ **本版没有装车验证过。** 下面每一条都标了验证状态，请不要把「离线判据通过」读成「实机可用」。
+> 稳定版仍是 `4.3-user-intent`（`versionCode 115`，`main` 分支）。
+>
+> 安装提示：`versionCode 116 > 115`，可以覆盖安装；但**装了 116 之后不能再覆盖回 115**
+> （`INSTALL_FAILED_VERSION_DOWNGRADE`），退回旧版必须卸载重装，而那会一并清掉已保存的 ADB 授权身份。
+
+### 变更
+
+- **认屏判据化，新增 `DisplayTable`。** 投屏目标解析从「按名字前缀匹配 + 猜 displayId」
+  改为三族精确判据，判定逻辑收进一个新的纯 Java 类（零 Android 依赖）。
+  **这样做的直接好处是它可以被验证**：本工程只有一台 DiLink 5.0，其余代次无法上车，
+  把它做成不依赖 Android 的纯类，就能拿真实 `dumpsys` 输出在电脑上离线跑通。
+
+- **删除投屏槽位的兜底常量 3。** 旧实现枚举落空时会硬投写死的 `displayId=3` ——
+  本机恰好是 3，但没有任何证据表明别的车型也是，等于赌「一台没见过的车和我们这台一样」。
+  现在认不出来一律判「本机未适配」，**不猜任何 id**，并把应用侧实际枚举到的每一块副屏
+  写进原因串供核对。主投影屏常量 2 **保留**：应用侧永远枚举不到它（`getDisplay(2) = null`），
+  常量是本机的正常取值而非猜测。
+
+- **新增 DiLink 3/4 直投通路（`DIRECT`）。** 没有槽位族、但有仪表屏族
+  `fission_bg_xdjaVirtualSurface` 时，直接把应用投到那块屏。**没有新增投屏代码** ——
+  复用的是既有的 `am start --display N` 与 `am display move-stack`，适配只发生在「选哪块屏」。
+  依据来自对原版 APK 的反编译：`SDK_INT > 30` 才启动 `SecondaryDisplayService`
+  （自建虚拟屏 + 往仪表屏挂叠加窗口），SDK ≤ 30 时完全不启动；而两代都走
+  `ActivityTaskManager.getService()` 搬任务。也就是说旧代次去掉的是「自己造屏」那一层。
+
+- **新增 owner 归属校验。** owner 已知且不是系统 uid（1000）的候选一律否决，
+  防止把第三方应用自建的、名字碰巧相似的屏当成目标。应用侧取不到 owner 时记「未知」、
+  不因此否决，交由 daemon 那一趟真校验。
+
+- **识别升级为两趟：应用侧枚举 → daemon 精化。** `DisplayManager.getDisplays()` 看不到
+  被固件按 uid 过滤的屏，而 DiLink 3/4 的仪表屏正属此类。通道拉起后调用 `refineFromDaemon()`，
+  且**在通知界面之前**完成，使首开自动那条路径不会拿到旧结论；精化是**单调**的，
+  一次 dump 抖动不会把已跑起来的投屏抖没。取屏表在设备端过滤
+  （`dumpsys display | grep mBaseDisplayInfo`），与原版 `c0/k.m(I)` 同源。
+
+### 验证状态
+
+| 项 | 状态 |
+| --- | --- |
+| `SLOT` 通路（本车 DiLink 5.0） | ✅ **已实车验证**（`4.3-user-intent` 起） |
+| 离线判据：本车真实 `dumpsys` dump | ✅ 判定 `SLOT` / 目标 3 / 仪表屏 2，**与实车日志逐字一致** ⇒ 本车行为零变化 |
+| 离线判据：合成 DiLink 4.0 dump | ✅ 判定 `DIRECT` / 目标 1 |
+| 离线判据：敌意同名屏（owner uid 10167） | ✅ 判定 `UNSUPPORTED`；**没有归属校验时它会被误选为 `DIRECT`** |
+| 车机只读核对取屏表命令 | ✅ `dumpsys display \| grep mBaseDisplayInfo` → 4 行 / 3498 字节 / 136 ms（整份 dump 49 KB / 1032 行） |
+| **`DIRECT` 通路（DiLink 3/4）** | ❌ **未实机验证**。本工程没有 3/4 车，本车永远走不到；族名本身也是社区取证 |
+| **daemon 精化** | ❌ **未实机核对**。代码已接线，但带这段代码的包尚未装车 |
+| 全新安装 / 从旧版升级 / 开机自启 / 本车以外的车型 | ❌ 未验证（与 4.3 相同） |
+
+---
+
 ## 4.3-user-intent — versionCode 115（2026-09-28）
 
 ### 修复
