@@ -227,6 +227,7 @@ APK 路径取自 `ApplicationInfo.sourceDir`（`:498-504`），**不去解析 `p
 | `GuideActivity` | ADB 授权引导，兼「快速通道」：已就绪时几百毫秒内直接转走 | `GuideActivity.java:59-79` |
 | `DashboardSession` | 会话状态；候选判定委托给 `DisplayTable`，两趟（应用侧 + daemon 精化）共用同一套判据 | `DashboardSession.java:124-197` |
 | `DisplayTable` | 副屏表解析（`dumpsys` 文本）+ 三族判据 + owner 归属否决 + 通路判定（`SLOT`/`DIRECT`/`UNSUPPORTED`）+ 单调精化。**纯 Java、零 Android 依赖，因而可离线验证** | `DisplayTable.java:170-283` |
+| 平台事实诊断 | 未适配时连 `product=` / `sdk=` / `single_os=` 一起给出，否则用户无法反馈、也无法定位。`product`/`sdk` 取自应用侧 `Build`，`single_os` 经 shell 读 `getprop`（`SystemProperties` 是 @hide，反射在 targetSdk 32 下会被隐藏 API 限制挡住）。**纯诊断，不参与任何判定** | `DashboardSession.java`（`platformFacts`/`statOf`）、`ShellChannel.java`（`platformFacts()`） |
 | `ShellChannel` | shell 长连接 + 全部 shell 原语（投屏/输入/清单/任务/搬屏/抓帧） | `ShellChannel.java:55` |
 | `InjectClient` | 降级路径编排：应用清单、触摸兜底、抓帧预览、**看门状态机** | `InjectClient.java:44` |
 | `PrivilegedClient` | App 侧 Binder 客户端（进程内单例）：拉起、递 Surface、注入触摸 | `PrivilegedClient.java:59`，单例 `:157-171` |
