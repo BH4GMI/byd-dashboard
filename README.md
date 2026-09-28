@@ -23,6 +23,14 @@
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
 > 当前版本 **4.3-user-intent**（`versionCode 115`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+>
+> **为什么本仓的 Latest release 是 5.0、而 `main` 还写着 4.3？**
+> 这是刻意的，不是漏同步：`main` 保持**经实车验证的 4.3-user-intent** 作为可信基线，
+> 而 5.0（跨代次适配 + 自助排障，**尚未实机验证**）已作为正式 release 发布，
+> 开发在 `beta/5.0` 分支上继续。
+>
+> - 只想要**验证过**的版本：取 [`v4.3-user-intent`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v4.3-user-intent)。
+> - 想试 5.0：取 [`v5.0`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v5.0)，并先读它的验证状态表。
 
 ---
 
