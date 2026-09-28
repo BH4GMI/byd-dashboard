@@ -1,5 +1,7 @@
 # BYD-dashboard · 把任意 App 投到比亚迪 DiLink 5 的仪表盘
 
+**简体中文** · [English](README.en.md) · [Русский](README.ru.md)
+
 > ## 真机验证状态
 >
 > **4.3-user-intent 已在真机（DiLink 5.0）跑通端到端投屏**：
@@ -29,7 +31,7 @@
 > `beta/<版本>` 分支发布。所以当前 Latest release 就是 `v4.3-user-intent`，与 `main` 一致。
 >
 > - 只想要**验证过**的版本：取 [`v4.3-user-intent`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v4.3-user-intent)（= `main`）。
-> - 想试最新的未验证版本：取 [`v5.1`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v5.1)（`versionCode 119`，开发在 `beta/5.1`），并先读它的验证状态表。
+> - 想试最新的未验证版本：取 [`v5.3`](https://github.com/BH4GMI/byd-dashboard/releases/tag/v5.3)（`versionCode 121`，开发在 `beta/5.3`），并先读它的验证状态表。
 >   （`5.0` 的 release 与 tag 已下架，内容并入 `5.1`。）
 
 ---
