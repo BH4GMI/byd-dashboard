@@ -1,5 +1,7 @@
 # BYD-dashboard · 把任意 App 投到比亚迪 DiLink 5 的仪表盘
 
+**简体中文** · [English](README.en.md) · [Русский](README.ru.md)
+
 > ## ⚠️ Caution · 未经真机验收
 >
 > **这是一份尚未完成真机端到端验收的发行版，上车前请自行评估风险。**
@@ -20,6 +22,7 @@
 再用这份权限把任意应用投到仪表盘副屏、注入触控，并把它钉在副屏上。
 
 > 面向一台你自己拥有、且已开启无线 ADB 的 DiLink 5.0 车机。
+> **支持范围仅限 DiLink 5.0；不支持 DiLink 4。**
 > 与比亚迪汽车工业有限公司无关联，仅供互操作研究。
 > 许可证全文见 [`LICENSE`](LICENSE)。
 > 当前版本 **4.3-user-intent**（`versionCode 115`）。版本历史见 [`CHANGELOG.md`](CHANGELOG.md)。
